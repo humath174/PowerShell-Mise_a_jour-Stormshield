@@ -1,21 +1,4 @@
-﻿param(
-    [Parameter(Mandatory=$True, Position=0, ValueFromPipeline=$false)]
-    [System.String]$User,
-
-    [Parameter(Mandatory=$True, Position=1, ValueFromPipeline=$false)]
-    [System.String]$PSWD,
-    
-    [Parameter(Mandatory=$True, Position=2, ValueFromPipeline=$false)]
-    [System.String]$IP,
-
-    [Parameter(Mandatory=$True, Position=3, ValueFromPipeline=$false)]
-    [System.String]$Client,
-
-    [Parameter(Mandatory=$false)]
-    [System.String]$Port = "13422"
-)
-
-# Charger les assemblies pour l'interface graphique
+﻿# Charger les assemblies pour l'interface graphique
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
@@ -29,77 +12,160 @@ $modeles = @{
 
 # Créer le formulaire principal
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "Sélection du firmware Stormshield"
-$form.Size = New-Object System.Drawing.Size(500,350)
+$form.Text = "Mise à jour de firmware Stormshield"
+$form.Size = New-Object System.Drawing.Size(500,500)
 $form.StartPosition = "CenterScreen"
+
+# Position verticale courante pour les contrôles
+$yPos = 10
+
+# Champ pour l'adresse IP
+$labelIP = New-Object System.Windows.Forms.Label
+$labelIP.Location = New-Object System.Drawing.Point(10,$yPos)
+$labelIP.Size = New-Object System.Drawing.Size(200,20)
+$labelIP.Text = "Adresse IP du firewall:"
+$form.Controls.Add($labelIP)
+
+$textIP = New-Object System.Windows.Forms.TextBox
+$textIP.Location = New-Object System.Drawing.Point(220,$yPos)
+$textIP.Size = New-Object System.Drawing.Size(250,20)
+$form.Controls.Add($textIP)
+$yPos += 30
+
+# Champ pour le nom du client
+$labelClient = New-Object System.Windows.Forms.Label
+$labelClient.Location = New-Object System.Drawing.Point(10,$yPos)
+$labelClient.Size = New-Object System.Drawing.Size(200,20)
+$labelClient.Text = "Nom du client:"
+$form.Controls.Add($labelClient)
+
+$textClient = New-Object System.Windows.Forms.TextBox
+$textClient.Location = New-Object System.Drawing.Point(220,$yPos)
+$textClient.Size = New-Object System.Drawing.Size(250,20)
+$form.Controls.Add($textClient)
+$yPos += 30
+
+# Champ pour l'utilisateur admin
+$labelUser = New-Object System.Windows.Forms.Label
+$labelUser.Location = New-Object System.Drawing.Point(10,$yPos)
+$labelUser.Size = New-Object System.Drawing.Size(200,20)
+$labelUser.Text = "Nom d'utilisateur admin:"
+$form.Controls.Add($labelUser)
+
+$textUser = New-Object System.Windows.Forms.TextBox
+$textUser.Location = New-Object System.Drawing.Point(220,$yPos)
+$textUser.Size = New-Object System.Drawing.Size(250,20)
+$form.Controls.Add($textUser)
+$yPos += 30
+
+# Champ pour le mot de passe
+$labelPSWD = New-Object System.Windows.Forms.Label
+$labelPSWD.Location = New-Object System.Drawing.Point(10,$yPos)
+$labelPSWD.Size = New-Object System.Drawing.Size(200,20)
+$labelPSWD.Text = "Mot de passe:"
+$form.Controls.Add($labelPSWD)
+
+$textPSWD = New-Object System.Windows.Forms.TextBox
+$textPSWD.Location = New-Object System.Drawing.Point(220,$yPos)
+$textPSWD.Size = New-Object System.Drawing.Size(250,20)
+$textPSWD.PasswordChar = '*'
+$form.Controls.Add($textPSWD)
+$yPos += 30
+
+# Champ pour le port
+$labelPort = New-Object System.Windows.Forms.Label
+$labelPort.Location = New-Object System.Drawing.Point(10,$yPos)
+$labelPort.Size = New-Object System.Drawing.Size(200,20)
+$labelPort.Text = "Port (défaut: 13422):"
+$form.Controls.Add($labelPort)
+
+$textPort = New-Object System.Windows.Forms.TextBox
+$textPort.Location = New-Object System.Drawing.Point(220,$yPos)
+$textPort.Size = New-Object System.Drawing.Size(250,20)
+$textPort.Text = "13422"
+$form.Controls.Add($textPort)
+$yPos += 40
+
+# Séparateur
+$separator = New-Object System.Windows.Forms.Label
+$separator.Location = New-Object System.Drawing.Point(10,$yPos)
+$separator.Size = New-Object System.Drawing.Size(460,2)
+$separator.BorderStyle = [System.Windows.Forms.BorderStyle]::Fixed3D
+$form.Controls.Add($separator)
+$yPos += 20
 
 # Label et ComboBox pour la catégorie
 $labelCategorie = New-Object System.Windows.Forms.Label
-$labelCategorie.Location = New-Object System.Drawing.Point(10,20)
+$labelCategorie.Location = New-Object System.Drawing.Point(10,$yPos)
 $labelCategorie.Size = New-Object System.Drawing.Size(200,20)
 $labelCategorie.Text = "Sélectionnez la catégorie:"
 $form.Controls.Add($labelCategorie)
 
 $comboCategorie = New-Object System.Windows.Forms.ComboBox
-$comboCategorie.Location = New-Object System.Drawing.Point(220,20)
+$comboCategorie.Location = New-Object System.Drawing.Point(220,$yPos)
 $comboCategorie.Size = New-Object System.Drawing.Size(250,20)
 $comboCategorie.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
 $modeles.Keys | ForEach-Object { $comboCategorie.Items.Add($_) }
 $form.Controls.Add($comboCategorie)
+$yPos += 30
 
 # Label et ComboBox pour le modèle spécifique
 $labelModele = New-Object System.Windows.Forms.Label
-$labelModele.Location = New-Object System.Drawing.Point(10,60)
+$labelModele.Location = New-Object System.Drawing.Point(10,$yPos)
 $labelModele.Size = New-Object System.Drawing.Size(200,20)
 $labelModele.Text = "Sélectionnez le modèle:"
 $form.Controls.Add($labelModele)
 
 $comboModele = New-Object System.Windows.Forms.ComboBox
-$comboModele.Location = New-Object System.Drawing.Point(220,60)
+$comboModele.Location = New-Object System.Drawing.Point(220,$yPos)
 $comboModele.Size = New-Object System.Drawing.Size(250,20)
 $comboModele.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
 $form.Controls.Add($comboModele)
+$yPos += 30
 
 # Options de version
 $labelVersion = New-Object System.Windows.Forms.Label
-$labelVersion.Location = New-Object System.Drawing.Point(10,100)
+$labelVersion.Location = New-Object System.Drawing.Point(10,$yPos)
 $labelVersion.Size = New-Object System.Drawing.Size(200,20)
 $labelVersion.Text = "Options de version:"
 $form.Controls.Add($labelVersion)
 
 $radioDerniere = New-Object System.Windows.Forms.RadioButton
-$radioDerniere.Location = New-Object System.Drawing.Point(220,100)
+$radioDerniere.Location = New-Object System.Drawing.Point(220,$yPos)
 $radioDerniere.Size = New-Object System.Drawing.Size(250,20)
 $radioDerniere.Text = "Utiliser la dernière version"
 $radioDerniere.Checked = $true
 $form.Controls.Add($radioDerniere)
+$yPos += 25
 
 $radioChoisir = New-Object System.Windows.Forms.RadioButton
-$radioChoisir.Location = New-Object System.Drawing.Point(220,130)
+$radioChoisir.Location = New-Object System.Drawing.Point(220,$yPos)
 $radioChoisir.Size = New-Object System.Drawing.Size(250,20)
 $radioChoisir.Text = "Choisir une version spécifique"
 $form.Controls.Add($radioChoisir)
+$yPos += 30
 
 # Bouton pour sélectionner le fichier
 $buttonSelect = New-Object System.Windows.Forms.Button
-$buttonSelect.Location = New-Object System.Drawing.Point(220,170)
+$buttonSelect.Location = New-Object System.Drawing.Point(220,$yPos)
 $buttonSelect.Size = New-Object System.Drawing.Size(250,30)
 $buttonSelect.Text = "Sélectionner le fichier .maj"
 $buttonSelect.Enabled = $false
 $form.Controls.Add($buttonSelect)
+$yPos += 40
 
 # Bouton OK
 $buttonOK = New-Object System.Windows.Forms.Button
-$buttonOK.Location = New-Object System.Drawing.Point(150,220)
+$buttonOK.Location = New-Object System.Drawing.Point(150,$yPos)
 $buttonOK.Size = New-Object System.Drawing.Size(100,30)
-$buttonOK.Text = "OK"
+$buttonOK.Text = "Lancer la mise à jour"
 $buttonOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
 $form.AcceptButton = $buttonOK
 $form.Controls.Add($buttonOK)
 
 # Bouton Annuler
 $buttonCancel = New-Object System.Windows.Forms.Button
-$buttonCancel.Location = New-Object System.Drawing.Point(260,220)
+$buttonCancel.Location = New-Object System.Drawing.Point(260,$yPos)
 $buttonCancel.Size = New-Object System.Drawing.Size(100,30)
 $buttonCancel.Text = "Annuler"
 $buttonCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
@@ -128,7 +194,7 @@ $buttonSelect.Add_Click({
     
     if ($fileDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
         $script:UpdateFilePath = $fileDialog.FileName
-        $buttonSelect.Text = "Fichier sélectionné"
+        $buttonSelect.Text = "Fichier sélectionné: " + (Split-Path $script:UpdateFilePath -Leaf)
     }
 })
 
@@ -140,9 +206,22 @@ if ($result -ne [System.Windows.Forms.DialogResult]::OK) {
     exit 1
 }
 
+# Récupérer les valeurs des champs
+$IP = $textIP.Text
+$Client = $textClient.Text
+$User = $textUser.Text
+$PSWD = $textPSWD.Text
+$Port = $textPort.Text
+
+# Validation des champs obligatoires
+if ([string]::IsNullOrEmpty($IP) -or [string]::IsNullOrEmpty($Client) -or [string]::IsNullOrEmpty($User) -or [string]::IsNullOrEmpty($PSWD)) {
+    [System.Windows.Forms.MessageBox]::Show("Tous les champs obligatoires doivent être remplis!", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    exit 1
+}
+
 # Vérifier si un fichier est nécessaire et sélectionné
 if ($radioChoisir.Checked -and (-not $script:UpdateFilePath)) {
-    Write-Host "Aucun fichier sélectionné. Le script va s'arrêter."
+    [System.Windows.Forms.MessageBox]::Show("Aucun fichier de mise à jour sélectionné!", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     exit 1
 }
 
@@ -171,7 +250,7 @@ if ($radioDerniere.Checked) {
         $script:UpdateFilePath = $latestFirmware.FullName
         Write-Host "Firmware sélectionné: $($latestFirmware.Name)"
     } else {
-        Write-Host "Aucun firmware trouvé dans $firmwareDir"
+        [System.Windows.Forms.MessageBox]::Show("Aucun firmware trouvé dans le dossier $firmwareDir", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
         exit 1
     }
 }
@@ -198,6 +277,9 @@ Get-SSHTrustedHost | Remove-SSHTrustedHost
 Add-Content -Path $logfile -Value "------------------------------------------"
 Add-Content -Path $logfile -Value "WINSCP upload started at $(Get-Date)"
 Add-Content -Path $logfile -Value "------------------------------------------"
+Add-Content -Path $logfile -Value "Client: $Client"
+Add-Content -Path $logfile -Value "IP: $IP"
+Add-Content -Path $logfile -Value "Utilisateur: $User"
 Add-Content -Path $logfile -Value "Modèle sélectionné: $($comboModele.SelectedItem)"
 Add-Content -Path $logfile -Value "Firmware utilisé: $(Split-Path $script:UpdateFilePath -Leaf)"
 
@@ -211,6 +293,7 @@ try {
     Add-Content -Path $logfile -Value "File uploaded successfully"
 } catch {
     Add-Content -Path $logfile -Value "Error during WinSCP upload: $_"
+    [System.Windows.Forms.MessageBox]::Show("Erreur lors de l'upload du fichier: $_", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     exit 1
 }
 
@@ -220,7 +303,7 @@ try {
         ComputerName = $IP
         Credential   = $Credential
         AcceptKey    = $true
-        Port         = 13422  # Default SSH port
+        Port         = $Port
     }
 
     $sessionssh = New-SSHSession @sessionParams -ErrorAction Stop
@@ -258,13 +341,15 @@ try {
     
     Remove-SSHSession -SSHSession $sessionssh | Out-Null
     
+    # Afficher un message de succès
+    [System.Windows.Forms.MessageBox]::Show("Mise à jour terminée avec succès!`nVoir le log: $logfile", "Succès", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+    
 } catch {
     Add-Content -Path $logfile -Value "Error during SSH operations: $_"
+    [System.Windows.Forms.MessageBox]::Show("Erreur lors des opérations SSH: $_", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     exit 1
 }
 
 Add-Content -Path $logfile -Value "------------------------------------------"
 Add-Content -Path $logfile -Value "Script completed successfully at $(Get-Date)"
 Add-Content -Path $logfile -Value "------------------------------------------"
-
-Write-Host "Mise à jour terminée avec succès. Voir le log: $logfile"
