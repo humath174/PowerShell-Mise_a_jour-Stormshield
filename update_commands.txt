@@ -1,0 +1,4 @@
+cd /chemin/destination/
+chmod +x fwupd-4.3.36-SNS-amd64-M.maj
+./fwupd-4.3.36-SNS-amd64-M.maj
+exit
