@@ -1,55 +1,4 @@
-C:\Users\mathe\Downloads\fwupd-4.8.8-SNS-amd64-M.maj
-C:\Users\mathe\Downloads\fwupd-4.3.9-SNS-armv6-S.maj
-C:\Users\mathe\Downloads\fwupd-4.3.36-SNS-amd64-M.maj
-
-uplaod file 
-
-cli
-admin
-modify on force
-system update activate
-
-
-# Demander les infos
-$hostname = Read-Host "Entrez l'adresse IP ou le nom de l'hôte"
-$username = Read-Host "Entrez votre nom d'utilisateur (admin)"
-$port = 13422
-$localFilePath = Read-Host "Entrez le chemin local vers le fichier de mise à jour (.maj)"
-$remoteFilePath = "/data/tmp/" + [System.IO.Path]::GetFileName($localFilePath)
-
-# Emplacements de pscp.exe et plink.exe
-$pscpPath = "C:\Program Files\PuTTY\pscp.exe"
-$plinkPath = "C:\Program Files\PuTTY\plink.exe"
-
-# 1. Envoyer le fichier .maj
-Write-Host "Transfert du fichier de mise à jour..."
-$args = "-P $port `"$localFilePath`" $username@$hostname`"$remoteFilePath`""
-Start-Process -FilePath $pscpPath -ArgumentList $args -NoNewWindow -Wait
-
-# 2. Appliquer la mise à jour via serverd
-Write-Host "Application de la mise à jour..."
-$serverdCommand = "echo '<SYSTEM UPDATE file=`"$remoteFilePath`" reboot=`"yes`">' | serverd"
-$applyUpdateArgs = "-ssh $username@$hostname -P $port `"$serverdCommand`""
-Start-Process -FilePath $plinkPath -ArgumentList $applyUpdateArgs -NoNewWindow -Wait
-
-Write-Host "Mise à jour envoyée et appliquée. Le Stormshield va redémarrer si nécessaire."
-
-
-####
-#   Powershell script made by Dregnoxx
-#   Provided as is, no warranty and no support will be added
-#   Dregnoxx.tech | @dregnoxx
-####
-#   This script require the use of WinSCP and PoshSSH
-#   https://winscp.net/eng/download.php
-#   https://github.com/darkoperator/Posh-SSH    |   Install-Module -Name Posh-SSH
-###
-#   Made for SN200 series
-#   Not yet tested on other models
-###
-
-##  VAR for each setting you will need to specify in your task
-param(
+﻿param(
     [Parameter(Mandatory=$True, Position=0, ValueFromPipeline=$false)]
     [System.String]$User,
 
@@ -63,7 +12,10 @@ param(
     [System.String]$Client,
 
     [Parameter(Mandatory=$false)]
-    [System.String]$Port = "13422"
+    [System.String]$Port = "13422",
+
+    [Parameter(Mandatory=$True)]
+    [System.String]$UpdateFilePath  ## Paramètre pour la racine du fichier de mise à jour
 )
 
 # Convert password to secure string and create credentials
@@ -73,7 +25,7 @@ $WSCPLogin = "$User" + ":" + "$PSWD"
 
 ## LOG Firewall version + Date in the format day, month, year, hour, minute
 $date = Get-Date -Format "dd-MM-yyyy-HH-mm"
-$logPath = "C:\Users\mathe\OneDrive\Documents\Logs"
+$logPath = "C:\logs"
 $logfile = "$logPath\$Client-$date.log"
 
 # Create logs directory if it doesn't exist
@@ -93,7 +45,7 @@ try {
     # WinSCP upload command
     & "C:\Program Files (x86)\WinSCP\WinSCP.com" /command `
         "open scp://$WSCPLogin@$IP`:$Port -hostkey=`"*`"" `
-        "put `"C:\Users\mathe\Downloads\fwupd-4.8.8-SNS-amd64-M.maj`" `"/usr/Firewall/Update/`"" `
+        "put `"$UpdateFilePath`" `"/usr/Firewall/Update/`"" `
         "exit"
     
     Add-Content -Path $logfile -Value "File uploaded successfully"
@@ -124,7 +76,7 @@ try {
     Add-Content -Path $logfile -Value "Starting firewall update at $(Get-Date)"
     Add-Content -Path $logfile -Value "------------------------------------------"
     
-    $updateResult = Invoke-SSHCommand -SSHSession $sessionssh -Command "fwupdate -r -f /usr/Firewall/Update/fwupd-4.8.8-SNS-amd64-M.maj" -ErrorAction Stop
+    $updateResult = Invoke-SSHCommand -SSHSession $sessionssh -Command "fwupdate -r -f /usr/Firewall/Update/$(Split-Path $UpdateFilePath -Leaf)" -ErrorAction Stop
     Add-Content -Path $logfile -Value $updateResult.Output
     
     Remove-SSHSession -SSHSession $sessionssh | Out-Null
