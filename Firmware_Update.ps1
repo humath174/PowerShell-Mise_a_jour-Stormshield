@@ -12,11 +12,25 @@
     [System.String]$Client,
 
     [Parameter(Mandatory=$false)]
-    [System.String]$Port = "13422",
-
-    [Parameter(Mandatory=$True)]
-    [System.String]$UpdateFilePath  ## Paramètre pour la racine du fichier de mise à jour
+    [System.String]$Port = "13422"
 )
+
+# Charger l'assembly pour l'interface graphique
+Add-Type -AssemblyName System.Windows.Forms
+
+# Afficher la boîte de dialogue pour sélectionner le fichier
+$fileDialog = New-Object System.Windows.Forms.OpenFileDialog
+$fileDialog.Title = "Sélectionnez le fichier de mise à jour (.maj)"
+$fileDialog.Filter = "Fichiers de mise à jour (*.maj)|*.maj"
+$fileDialog.Multiselect = $false
+
+# Si l'utilisateur annule la sélection
+if ($fileDialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {
+    Write-Host "Aucun fichier sélectionné. Le script va s'arrêter."
+    exit 1
+}
+
+$UpdateFilePath = $fileDialog.FileName
 
 # Convert password to secure string and create credentials
 $PASSWORD = ConvertTo-SecureString -String $PSWD -AsPlainText -Force
