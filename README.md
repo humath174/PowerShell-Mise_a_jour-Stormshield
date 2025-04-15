@@ -2,13 +2,15 @@
 
     Telecharger et executer  l'application : https://winscp.net/eng/downloads.php
 
-[PoshSSH]
+[PoshSSH et Script]
 
     Ouvrir PowerShell en mode administrateur
 
-    Exécuter la commande :
+    Exécuter les commande :
 
     Install-Module -Name Posh-SSH
+
+    Set-ExecutionPolicy Unrestricted
 
 [Création du dossier de logs]
 
