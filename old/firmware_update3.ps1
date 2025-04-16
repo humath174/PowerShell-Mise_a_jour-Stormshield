@@ -1,4 +1,4 @@
-﻿# Charger les assemblies pour l'interface graphique
+# Charger les assemblies pour l'interface graphique
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
@@ -10,35 +10,10 @@ $modeles = @{
     "Taille L" = @("SN6100-A", "SN3100-A", "SN2100-A", "SN910-A", "SN1100-A", "SN6000-A", "SN3000-A", "SN2000-A", "SNxr1200-A", "SN-M-Series-720", "SN-M-Series-920", "SN520-A", "SN-L-Series-2200", "SN-L-Series-3200", "SN-XL-Series-5200", "SN-XL-Series-6200")
 }
 
-# Fonction pour déterminer la catégorie d'un modèle
-function Get-StormshieldCategory {
-    param (
-        [string]$model
-    )
-    
-    foreach ($category in $modeles.Keys) {
-        if ($modeles[$category] -contains $model) {
-            return $category
-        }
-    }
-    
-    # Vérification partielle pour les modèles qui pourraient avoir des suffixes différents
-    foreach ($category in $modeles.Keys) {
-        foreach ($pattern in $modeles[$category]) {
-            $basePattern = $pattern -replace '-.*$', ''
-            if ($model -match "^$basePattern") {
-                return $category
-            }
-        }
-    }
-    
-    return $null
-}
-
 # Créer le formulaire principal
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Mise à jour de firmware Stormshield"
-$form.Size = New-Object System.Drawing.Size(500,600) # Augmenté la hauteur pour le nouveau bouton
+$form.Size = New-Object System.Drawing.Size(500,500)
 $form.StartPosition = "CenterScreen"
 
 # Position verticale courante pour les contrôles
@@ -111,14 +86,6 @@ $textPort.Text = "13422"
 $form.Controls.Add($textPort)
 $yPos += 40
 
-# Bouton de test et détection
-$buttonTest = New-Object System.Windows.Forms.Button
-$buttonTest.Location = New-Object System.Drawing.Point(150,$yPos)
-$buttonTest.Size = New-Object System.Drawing.Size(200,30)
-$buttonTest.Text = "Tester la connexion et détecter"
-$form.Controls.Add($buttonTest)
-$yPos += 40
-
 # Séparateur
 $separator = New-Object System.Windows.Forms.Label
 $separator.Location = New-Object System.Drawing.Point(10,$yPos)
@@ -126,14 +93,6 @@ $separator.Size = New-Object System.Drawing.Size(460,2)
 $separator.BorderStyle = [System.Windows.Forms.BorderStyle]::Fixed3D
 $form.Controls.Add($separator)
 $yPos += 20
-
-# Label pour afficher les infos détectées
-$labelDetected = New-Object System.Windows.Forms.Label
-$labelDetected.Location = New-Object System.Drawing.Point(10,$yPos)
-$labelDetected.Size = New-Object System.Drawing.Size(460,40)
-$labelDetected.Text = "Aucune information détectée"
-$form.Controls.Add($labelDetected)
-$yPos += 50
 
 # Label et ComboBox pour la catégorie
 $labelCategorie = New-Object System.Windows.Forms.Label
@@ -236,85 +195,6 @@ $buttonSelect.Add_Click({
     if ($fileDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
         $script:UpdateFilePath = $fileDialog.FileName
         $buttonSelect.Text = "Fichier sélectionné: " + (Split-Path $script:UpdateFilePath -Leaf)
-    }
-})
-
-# Gestionnaire d'événements pour le bouton de test
-$buttonTest.Add_Click({
-    # Récupérer les valeurs des champs
-    $IP = $textIP.Text
-    $User = $textUser.Text
-    $PSWD = $textPSWD.Text
-    $Port = $textPort.Text
-
-    # Validation des champs obligatoires
-    if ([string]::IsNullOrEmpty($IP) -or [string]::IsNullOrEmpty($User) -or [string]::IsNullOrEmpty($PSWD)) {
-        [System.Windows.Forms.MessageBox]::Show("Veuillez remplir l'IP, l'utilisateur et le mot de passe pour le test!", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-        return
-    }
-
-    try {
-        # Convert password to secure string and create credentials
-        $PASSWORD = ConvertTo-SecureString -String $PSWD -AsPlainText -Force
-        $Credential = New-Object -TypeName System.Management.Automation.PSCredential ($User, $PASSWORD)
-
-        # SSH connection
-        $sessionParams = @{
-            ComputerName = $IP
-            Credential   = $Credential
-            AcceptKey    = $true
-            Port         = $Port
-        }
-
-        $sessionssh = New-SSHSession @sessionParams -ErrorAction Stop
-        
-        # Récupérer les informations du firewall
-        $versionInfo = Invoke-SSHCommand -SSHSession $sessionssh -Command "getversion" -ErrorAction Stop
-        $licenseInfo = Invoke-SSHCommand -SSHSession $sessionssh -Command "getlicense" -ErrorAction Stop
-        $systemInfo = Invoke-SSHCommand -SSHSession $sessionssh -Command "system info" -ErrorAction Stop
-        $modelInfo = Invoke-SSHCommand -SSHSession $sessionssh -Command "getmodel" -ErrorAction Stop
-        
-        Remove-SSHSession -SSHSession $sessionssh | Out-Null
-
-        # Analyser les informations
-        $version = $versionInfo.Output | Where-Object { $_ -match "Version" } | Select-Object -First 1
-        $model = $systemInfo.Output | Where-Object { $_ -match "Model" } | Select-Object -First 1
-        $serial = $systemInfo.Output | Where-Object { $_ -match "Serial" } | Select-Object -First 1
-        $licenseStatus = $licenseInfo.Output | Where-Object { $_ -match "Status" } | Select-Object -First 1
-        $modelName = $modelInfo.Output | Select-Object -First 1
-
-        # Nettoyer le nom du modèle
-        $modelName = $modelName.Trim()
-        
-        # Déterminer la catégorie
-        $category = Get-StormshieldCategory -model $modelName
-        
-        if ($null -eq $category) {
-            $category = "Inconnue"
-            $labelDetected.Text = "Modèle détecté: $modelName`nCatégorie: $category`nImpossible de déterminer automatiquement la catégorie"
-        } else {
-            $labelDetected.Text = "Modèle détecté: $modelName`nCatégorie: $category"
-            
-            # Sélectionner automatiquement la catégorie et le modèle
-            $comboCategorie.SelectedItem = $category
-            $comboModele.SelectedItem = $modelName
-        }
-
-        # Afficher les informations dans une boîte de dialogue
-        $message = @"
-Informations du firewall:
-$version
-Modèle: $modelName
-$model
-$serial
-Catégorie: $category
-État de la licence: $licenseStatus
-"@
-
-        [System.Windows.Forms.MessageBox]::Show($message, "Résultats du test", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-
-    } catch {
-        [System.Windows.Forms.MessageBox]::Show("Erreur lors du test de connexion: $_", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     }
 })
 

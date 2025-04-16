@@ -1,4 +1,4 @@
-﻿# Charger les assemblies pour l'interface graphique
+# Charger les assemblies pour l'interface graphique
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
