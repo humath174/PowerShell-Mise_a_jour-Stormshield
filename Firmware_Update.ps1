@@ -38,7 +38,7 @@ function Get-StormshieldCategory {
 # Créer le formulaire principal
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Mise à jour de firmware Stormshield"
-$form.Size = New-Object System.Drawing.Size(500,600) # Augmenté la hauteur pour le nouveau bouton
+$form.Size = New-Object System.Drawing.Size(500,600)
 $form.StartPosition = "CenterScreen"
 
 # Position verticale courante pour les contrôles
@@ -322,8 +322,7 @@ Catégorie: $category
 $result = $form.ShowDialog()
 
 if ($result -ne [System.Windows.Forms.DialogResult]::OK) {
-    Write-Host "Opération annulée par l'utilisateur."
-    exit 1
+    exit
 }
 
 # Récupérer les valeurs des champs
@@ -336,13 +335,13 @@ $Port = $textPort.Text
 # Validation des champs obligatoires
 if ([string]::IsNullOrEmpty($IP) -or [string]::IsNullOrEmpty($Client) -or [string]::IsNullOrEmpty($User) -or [string]::IsNullOrEmpty($PSWD)) {
     [System.Windows.Forms.MessageBox]::Show("Tous les champs obligatoires doivent être remplis!", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-    exit 1
+    exit
 }
 
 # Vérifier si un fichier est nécessaire et sélectionné
 if ($radioChoisir.Checked -and (-not $script:UpdateFilePath)) {
     [System.Windows.Forms.MessageBox]::Show("Aucun fichier de mise à jour sélectionné!", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-    exit 1
+    exit
 }
 
 # Si on utilise la dernière version, déterminer le chemin automatiquement
@@ -368,10 +367,9 @@ if ($radioDerniere.Checked) {
     
     if ($latestFirmware) {
         $script:UpdateFilePath = $latestFirmware.FullName
-        Write-Host "Firmware sélectionné: $($latestFirmware.Name)"
     } else {
         [System.Windows.Forms.MessageBox]::Show("Aucun firmware trouvé dans le dossier $firmwareDir", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-        exit 1
+        exit
     }
 }
 
@@ -393,32 +391,48 @@ if (-not (Test-Path -Path $logPath)) {
 # Clear any existing trusted hosts
 Get-SSHTrustedHost | Remove-SSHTrustedHost 
 
-## SFTP Connection + upload the update file
-Add-Content -Path $logfile -Value "------------------------------------------"
-Add-Content -Path $logfile -Value "WINSCP upload started at $(Get-Date)"
-Add-Content -Path $logfile -Value "------------------------------------------"
-Add-Content -Path $logfile -Value "Client: $Client"
-Add-Content -Path $logfile -Value "IP: $IP"
-Add-Content -Path $logfile -Value "Utilisateur: $User"
-Add-Content -Path $logfile -Value "Modèle sélectionné: $($comboModele.SelectedItem)"
-Add-Content -Path $logfile -Value "Firmware utilisé: $(Split-Path $script:UpdateFilePath -Leaf)"
+# Créer une fenêtre CMD pour afficher les logs
+$cmdProcess = Start-Process "cmd.exe" -ArgumentList "/k title Logs de mise à jour - $Client" -PassThru
+
+# Fonction pour envoyer des commandes à la fenêtre CMD
+function Send-ToCmd {
+    param (
+        [string]$message
+    )
+    $message | Out-File -FilePath "\\?\C:\temp\cmdinput.txt" -Append -Encoding ASCII
+    Start-Sleep -Milliseconds 100
+}
+
+# Créer un fichier temporaire pour envoyer des commandes à la fenêtre CMD
+New-Item -Path "C:\temp\cmdinput.txt" -ItemType File -Force | Out-Null
+
+# Envoyer les informations initiales à la fenêtre CMD
+Send-ToCmd "@echo off"
+Send-ToCmd "echo ******************************************"
+Send-ToCmd "echo *  Début du processus de mise à jour      *"
+Send-ToCmd "echo *  Client: $Client"
+Send-ToCmd "echo *  Firewall: $IP"
+Send-ToCmd "echo *  Fichier: $(Split-Path $script:UpdateFilePath -Leaf)"
+Send-ToCmd "echo ******************************************"
+Send-ToCmd "echo."
 
 try {
     # WinSCP upload command
+    Send-ToCmd "echo [$(Get-Date -Format 'HH:mm:ss')] Début de l'upload du fichier..."
+    Send-ToCmd "echo."
+
     & "C:\Program Files (x86)\WinSCP\WinSCP.com" /command `
         "open scp://$WSCPLogin@$IP`:$Port -hostkey=`"*`"" `
         "put `"$script:UpdateFilePath`" `"/usr/Firewall/Update/`"" `
         "exit"
     
-    Add-Content -Path $logfile -Value "File uploaded successfully"
-} catch {
-    Add-Content -Path $logfile -Value "Error during WinSCP upload: $_"
-    [System.Windows.Forms.MessageBox]::Show("Erreur lors de l'upload du fichier: $_", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-    exit 1
-}
+    Send-ToCmd "echo [$(Get-Date -Format 'HH:mm:ss')] Fichier uploadé avec succès"
+    Send-ToCmd "echo."
+    
+    # SSH connection + update
+    Send-ToCmd "echo [$(Get-Date -Format 'HH:mm:ss')] Connexion SSH pour lancer la mise à jour..."
+    Send-ToCmd "echo."
 
-## SSH connection + update
-try {
     $sessionParams = @{
         ComputerName = $IP
         Credential   = $Credential
@@ -428,48 +442,50 @@ try {
 
     $sessionssh = New-SSHSession @sessionParams -ErrorAction Stop
     
-    Add-Content -Path $logfile -Value "------------------------------------------"
-    Add-Content -Path $logfile -Value "Firmware version before the update"
-    Add-Content -Path $logfile -Value "------------------------------------------"
-    
+    # Récupérer la version avant mise à jour
     $preVersion = Invoke-SSHCommand -SSHSession $sessionssh -Command "getversion" -ErrorAction Stop
-    Add-Content -Path $logfile -Value $preVersion.Output
+    Send-ToCmd "echo Version avant mise à jour:"
+    $preVersion.Output | ForEach-Object { Send-ToCmd "echo $_" }
+    Send-ToCmd "echo."
     
-    Add-Content -Path $logfile -Value "------------------------------------------"
-    Add-Content -Path $logfile -Value "Starting firewall update at $(Get-Date)"
-    Add-Content -Path $logfile -Value "------------------------------------------"
-    
+    # Lancer la mise à jour
+    Send-ToCmd "echo [$(Get-Date -Format 'HH:mm:ss')] Lancement de la commande de mise à jour..."
     $updateResult = Invoke-SSHCommand -SSHSession $sessionssh -Command "fwupdate -r -f /usr/Firewall/Update/$(Split-Path $script:UpdateFilePath -Leaf)" -ErrorAction Stop
-    Add-Content -Path $logfile -Value $updateResult.Output
+    $updateResult.Output | ForEach-Object { Send-ToCmd "echo $_" }
     
     Remove-SSHSession -SSHSession $sessionssh | Out-Null
     
-    Add-Content -Path $logfile -Value "Update command sent successfully. Waiting for 10 minutes..."
-    
-    ## Sleep for 10 mins needed to let the update do its job
-    Start-Sleep -Seconds 600
-    
-    ## Verify update
-    $sessionssh = New-SSHSession @sessionParams -ErrorAction Stop
-    
-    Add-Content -Path $logfile -Value "------------------------------------------"
-    Add-Content -Path $logfile -Value "Firmware version after the update"
-    Add-Content -Path $logfile -Value "------------------------------------------"
-    
-    $postVersion = Invoke-SSHCommand -SSHSession $sessionssh -Command "getversion" -ErrorAction Stop
-    Add-Content -Path $logfile -Value $postVersion.Output
-    
-    Remove-SSHSession -SSHSession $sessionssh | Out-Null
-    
-    # Afficher un message de succès
-    [System.Windows.Forms.MessageBox]::Show("Mise à jour terminée avec succès!`nVoir le log: $logfile", "Succès", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-    
-} catch {
-    Add-Content -Path $logfile -Value "Error during SSH operations: $_"
-    [System.Windows.Forms.MessageBox]::Show("Erreur lors des opérations SSH: $_", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-    exit 1
-}
+    Send-ToCmd "echo."
+    Send-ToCmd "echo [$(Get-Date -Format 'HH:mm:ss')] Mise à jour lancée. Attente de 1 minute avant vérification..."
+    Send-ToCmd "echo."
 
-Add-Content -Path $logfile -Value "------------------------------------------"
-Add-Content -Path $logfile -Value "Script completed successfully at $(Get-Date)"
-Add-Content -Path $logfile -Value "------------------------------------------"
+    # Attendre 1 minute
+    Start-Sleep -Seconds 60
+    
+    # Vérifier si le firewall est toujours accessible
+    Send-ToCmd "echo [$(Get-Date -Format 'HH:mm:ss')] Test d'accès au firewall..."
+    Send-ToCmd "echo."
+
+    try {
+        $testSession = New-SSHSession @sessionParams -ErrorAction SilentlyContinue
+        if ($testSession) {
+            Send-ToCmd "echo Le firewall est toujours accessible - la mise à jour n'a probablement pas démarré"
+            Remove-SSHSession -SSHSession $testSession | Out-Null
+        } else {
+            Send-ToCmd "echo Le firewall n'est plus accessible - la mise à jour a démarré"
+        }
+    } catch {
+        Send-ToCmd "echo Le firewall n'est plus accessible - la mise à jour a démarré"
+    }
+
+    Send-ToCmd "echo."
+    Send-ToCmd "echo [$(Get-Date -Format 'HH:mm:ss')] Processus terminé. Vous pouvez fermer cette fenêtre."
+    Send-ToCmd "pause"
+
+} catch {
+    Send-ToCmd "echo ERREUR: $_"
+    Send-ToCmd "echo."
+    Send-ToCmd "echo [$(Get-Date -Format 'HH:mm:ss')] Une erreur est survenue. Voir ci-dessus pour les détails."
+    Send-ToCmd "pause"
+    exit
+}
