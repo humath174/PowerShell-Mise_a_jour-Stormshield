@@ -1,0 +1,5 @@
+cli
+admin
+modify on force
+CONFIG BACKUP list=all [password=admin]> backup_20250416.na
+exit
