@@ -10,6 +10,9 @@ $modeles = @{
     "Taille L" = @("SN6100-A", "SN3100-A", "SN2100-A", "SN910-A", "SN1100-A", "SN6000-A", "SN3000-A", "SN2000-A", "SNxr1200-A", "SN-M-Series-720", "SN-M-Series-920", "SN520-A", "SN-L-Series-2200", "SN-L-Series-3200", "SN-XL-Series-5200", "SN-XL-Series-6200")
 }
 
+# Chemin du fichier CSV par défaut
+$defaultCsvPath = Join-Path $PSScriptRoot "clients_stormshield.csv"
+
 # Fonction pour déterminer la catégorie d'un modèle
 function Get-StormshieldCategory {
     param (
@@ -22,7 +25,6 @@ function Get-StormshieldCategory {
         }
     }
     
-    # Vérification partielle pour les modèles qui pourraient avoir des suffixes différents
     foreach ($category in $modeles.Keys) {
         foreach ($pattern in $modeles[$category]) {
             $basePattern = $pattern -replace '-.*$', ''
@@ -42,290 +44,319 @@ function Load-ClientsFromCSV {
     )
     
     try {
-        $clients = Import-Csv -Path $filePath -Delimiter ";"
-        return $clients
+        if (Test-Path -Path $filePath) {
+            $clients = Import-Csv -Path $filePath -Delimiter ";"
+            return $clients
+        }
+        return @()
     } catch {
-        [System.Windows.Forms.MessageBox]::Show("Erreur lors du chargement du fichier CSV: $_", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-        return $null
+        Write-Error "Erreur lors du chargement du fichier CSV: $_"
+        return @()
     }
 }
 
-# Fonction pour sauvegarder un client dans le fichier CSV
-function Save-ClientToCSV {
+# Fonction pour sauvegarder les clients dans un fichier CSV
+function Save-ClientsToCSV {
     param (
         [string]$filePath,
+        [array]$clients
+    )
+    
+    try {
+        $clients | Export-Csv -Path $filePath -Delimiter ";" -NoTypeInformation -Force
+        return $true
+    } catch {
+        Write-Error "Erreur lors de la sauvegarde du fichier CSV: $_"
+        return $false
+    }
+}
+
+# Fonction pour tester la connexion à un firewall
+function Test-FirewallConnection {
+    param (
         [PSCustomObject]$client
     )
     
     try {
-        # Vérifier si le fichier existe déjà
-        if (Test-Path -Path $filePath) {
-            $existingClients = Import-Csv -Path $filePath -Delimiter ";"
-            # Vérifier si le client existe déjà
-            $existingClient = $existingClients | Where-Object { $_.IP -eq $client.IP }
-            if ($existingClient) {
-                # Mettre à jour le client existant
-                $existingClient.Nom = $client.Nom
-                $existingClient.Utilisateur = $client.Utilisateur
-                $existingClient.MotDePasse = $client.MotDePasse
-                $existingClient.Port = $client.Port
-            } else {
-                # Ajouter le nouveau client
-                $existingClients += $client
-            }
-            $existingClients | Export-Csv -Path $filePath -Delimiter ";" -NoTypeInformation -Force
-        } else {
-            # Créer un nouveau fichier avec le client
-            $client | Export-Csv -Path $filePath -Delimiter ";" -NoTypeInformation -Force
+        # Convert password to secure string and create credentials
+        $PASSWORD = ConvertTo-SecureString -String $client.MotDePasse -AsPlainText -Force
+        $Credential = New-Object -TypeName System.Management.Automation.PSCredential ($client.Utilisateur, $PASSWORD)
+
+        # SSH connection parameters
+        $sessionParams = @{
+            ComputerName = $client.IP
+            Credential   = $Credential
+            AcceptKey    = $true
+            Port         = $client.Port
         }
-        return $true
+
+        # Test SSH connection
+        $sessionssh = New-SSHSession @sessionParams -ErrorAction Stop
+        
+        # Get basic info
+        $versionInfo = Invoke-SSHCommand -SSHSession $sessionssh -Command "getversion" -ErrorAction Stop
+        $modelInfo = Invoke-SSHCommand -SSHSession $sessionssh -Command "getmodel" -ErrorAction Stop
+        
+        Remove-SSHSession -SSHSession $sessionssh | Out-Null
+
+        # Parse model info
+        $modelName = ($modelInfo.Output | Select-Object -First 1).Trim()
+        
+        return @{
+            Status = "Success"
+            Model = $modelName
+            Version = ($versionInfo.Output | Where-Object { $_ -match "Version" } | Select-Object -First 1)
+        }
     } catch {
-        [System.Windows.Forms.MessageBox]::Show("Erreur lors de la sauvegarde du client: $_", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-        return $false
+        return @{
+            Status = "Error"
+            Message = $_.Exception.Message
+        }
     }
 }
 
 # Créer le formulaire principal
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Mise à jour de firmware Stormshield"
-$form.Size = New-Object System.Drawing.Size(800,700) # Augmenté la taille pour la liste des clients
+$form.Size = New-Object System.Drawing.Size(900,700)
 $form.StartPosition = "CenterScreen"
+$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+$form.MaximizeBox = $false
 
 # Position verticale courante pour les contrôles
 $yPos = 10
 
-# Liste des clients
-$labelClients = New-Object System.Windows.Forms.Label
-$labelClients.Location = New-Object System.Drawing.Point(10,$yPos)
-$labelClients.Size = New-Object System.Drawing.Size(200,20)
-$labelClients.Text = "Liste des clients:"
-$form.Controls.Add($labelClients)
+# Liste des clients avec couleur
+$listClients = New-Object System.Windows.Forms.ListView
+$listClients.Location = New-Object System.Drawing.Point(10, $yPos)
+$listClients.Size = New-Object System.Drawing.Size(600, 200)
+$listClients.View = [System.Windows.Forms.View]::Details
+$listClients.FullRowSelect = $true
+$listClients.GridLines = $true
+$listClients.MultiSelect = $true
 
-$listClients = New-Object System.Windows.Forms.ListBox
-$listClients.Location = New-Object System.Drawing.Point(10,($yPos + 20))
-$listClients.Size = New-Object System.Drawing.Size(300,150)
-$listClients.SelectionMode = "One"
+# Ajouter les colonnes
+$listClients.Columns.Add("Client", 150) | Out-Null
+$listClients.Columns.Add("IP", 120) | Out-Null
+$listClients.Columns.Add("Modèle", 150) | Out-Null
+$listClients.Columns.Add("Version", 150) | Out-Null
+$listClients.Columns.Add("Statut", 100) | Out-Null
+
 $form.Controls.Add($listClients)
-$yPos += 180
+$yPos += 210
 
 # Boutons pour la gestion des clients
-$buttonLoadCSV = New-Object System.Windows.Forms.Button
-$buttonLoadCSV.Location = New-Object System.Drawing.Point(320,$yPos)
-$buttonLoadCSV.Size = New-Object System.Drawing.Size(150,30)
-$buttonLoadCSV.Text = "Charger depuis CSV"
-$form.Controls.Add($buttonLoadCSV)
+$buttonTestAll = New-Object System.Windows.Forms.Button
+$buttonTestAll.Location = New-Object System.Drawing.Point(620, 10)
+$buttonTestAll.Size = New-Object System.Drawing.Size(150, 30)
+$buttonTestAll.Text = "Tester tous"
+$form.Controls.Add($buttonTestAll)
 
-$buttonSaveCSV = New-Object System.Windows.Forms.Button
-$buttonSaveCSV.Location = New-Object System.Drawing.Point(480,$yPos)
-$buttonSaveCSV.Size = New-Object System.Drawing.Size(150,30)
-$buttonSaveCSV.Text = "Sauvegarder vers CSV"
-$form.Controls.Add($buttonSaveCSV)
-$yPos += 40
-
-# Boutons pour la gestion des entrées
 $buttonAddClient = New-Object System.Windows.Forms.Button
-$buttonAddClient.Location = New-Object System.Drawing.Point(320,$yPos)
-$buttonAddClient.Size = New-Object System.Drawing.Size(150,30)
+$buttonAddClient.Location = New-Object System.Drawing.Point(620, 50)
+$buttonAddClient.Size = New-Object System.Drawing.Size(150, 30)
 $buttonAddClient.Text = "Ajouter client"
 $form.Controls.Add($buttonAddClient)
 
 $buttonRemoveClient = New-Object System.Windows.Forms.Button
-$buttonRemoveClient.Location = New-Object System.Drawing.Point(480,$yPos)
-$buttonRemoveClient.Size = New-Object System.Drawing.Size(150,30)
-$buttonRemoveClient.Text = "Supprimer client"
+$buttonRemoveClient.Location = New-Object System.Drawing.Point(620, 90)
+$buttonRemoveClient.Size = New-Object System.Drawing.Size(150, 30)
+$buttonRemoveClient.Text = "Supprimer client(s)"
 $form.Controls.Add($buttonRemoveClient)
-$yPos += 40
+
+$buttonSave = New-Object System.Windows.Forms.Button
+$buttonSave.Location = New-Object System.Drawing.Point(620, 130)
+$buttonSave.Size = New-Object System.Drawing.Size(150, 30)
+$buttonSave.Text = "Sauvegarder"
+$form.Controls.Add($buttonSave)
+
+$buttonLoad = New-Object System.Windows.Forms.Button
+$buttonLoad.Location = New-Object System.Drawing.Point(620, 170)
+$buttonLoad.Size = New-Object System.Drawing.Size(150, 30)
+$buttonLoad.Text = "Charger"
+$form.Controls.Add($buttonLoad)
 
 # Séparateur
 $separator = New-Object System.Windows.Forms.Label
-$separator.Location = New-Object System.Drawing.Point(10,$yPos)
-$separator.Size = New-Object System.Drawing.Size(760,2)
+$separator.Location = New-Object System.Drawing.Point(10, $yPos)
+$separator.Size = New-Object System.Drawing.Size(860, 2)
 $separator.BorderStyle = [System.Windows.Forms.BorderStyle]::Fixed3D
 $form.Controls.Add($separator)
 $yPos += 20
 
+# Détails du client sélectionné
+$labelDetails = New-Object System.Windows.Forms.Label
+$labelDetails.Location = New-Object System.Drawing.Point(10, $yPos)
+$labelDetails.Size = New-Object System.Drawing.Size(200, 20)
+$labelDetails.Text = "Détails du client sélectionné:"
+$form.Controls.Add($labelDetails)
+$yPos += 25
+
 # Champ pour l'adresse IP
 $labelIP = New-Object System.Windows.Forms.Label
-$labelIP.Location = New-Object System.Drawing.Point(10,$yPos)
-$labelIP.Size = New-Object System.Drawing.Size(200,20)
-$labelIP.Text = "Adresse IP du firewall:"
+$labelIP.Location = New-Object System.Drawing.Point(10, $yPos)
+$labelIP.Size = New-Object System.Drawing.Size(150, 20)
+$labelIP.Text = "Adresse IP:"
 $form.Controls.Add($labelIP)
 
 $textIP = New-Object System.Windows.Forms.TextBox
-$textIP.Location = New-Object System.Drawing.Point(220,$yPos)
-$textIP.Size = New-Object System.Drawing.Size(250,20)
+$textIP.Location = New-Object System.Drawing.Point(170, $yPos)
+$textIP.Size = New-Object System.Drawing.Size(200, 20)
 $form.Controls.Add($textIP)
+
+$labelPort = New-Object System.Windows.Forms.Label
+$labelPort.Location = New-Object System.Drawing.Point(380, $yPos)
+$labelPort.Size = New-Object System.Drawing.Size(50, 20)
+$labelPort.Text = "Port:"
+$form.Controls.Add($labelPort)
+
+$textPort = New-Object System.Windows.Forms.TextBox
+$textPort.Location = New-Object System.Drawing.Point(440, $yPos)
+$textPort.Size = New-Object System.Drawing.Size(80, 20)
+$textPort.Text = "13422"
+$form.Controls.Add($textPort)
 $yPos += 30
 
 # Champ pour le nom du client
 $labelClient = New-Object System.Windows.Forms.Label
-$labelClient.Location = New-Object System.Drawing.Point(10,$yPos)
-$labelClient.Size = New-Object System.Drawing.Size(200,20)
+$labelClient.Location = New-Object System.Drawing.Point(10, $yPos)
+$labelClient.Size = New-Object System.Drawing.Size(150, 20)
 $labelClient.Text = "Nom du client:"
 $form.Controls.Add($labelClient)
 
 $textClient = New-Object System.Windows.Forms.TextBox
-$textClient.Location = New-Object System.Drawing.Point(220,$yPos)
-$textClient.Size = New-Object System.Drawing.Size(250,20)
+$textClient.Location = New-Object System.Drawing.Point(170, $yPos)
+$textClient.Size = New-Object System.Drawing.Size(350, 20)
 $form.Controls.Add($textClient)
 $yPos += 30
 
 # Champ pour l'utilisateur admin
 $labelUser = New-Object System.Windows.Forms.Label
-$labelUser.Location = New-Object System.Drawing.Point(10,$yPos)
-$labelUser.Size = New-Object System.Drawing.Size(200,20)
-$labelUser.Text = "Nom d'utilisateur admin:"
+$labelUser.Location = New-Object System.Drawing.Point(10, $yPos)
+$labelUser.Size = New-Object System.Drawing.Size(150, 20)
+$labelUser.Text = "Utilisateur admin:"
 $form.Controls.Add($labelUser)
 
 $textUser = New-Object System.Windows.Forms.TextBox
-$textUser.Location = New-Object System.Drawing.Point(220,$yPos)
-$textUser.Size = New-Object System.Drawing.Size(250,20)
+$textUser.Location = New-Object System.Drawing.Point(170, $yPos)
+$textUser.Size = New-Object System.Drawing.Size(200, 20)
+$textUser.Text = "admin"
 $form.Controls.Add($textUser)
 $yPos += 30
 
 # Champ pour le mot de passe
 $labelPSWD = New-Object System.Windows.Forms.Label
-$labelPSWD.Location = New-Object System.Drawing.Point(10,$yPos)
-$labelPSWD.Size = New-Object System.Drawing.Size(200,20)
+$labelPSWD.Location = New-Object System.Drawing.Point(10, $yPos)
+$labelPSWD.Size = New-Object System.Drawing.Size(150, 20)
 $labelPSWD.Text = "Mot de passe:"
 $form.Controls.Add($labelPSWD)
 
 $textPSWD = New-Object System.Windows.Forms.TextBox
-$textPSWD.Location = New-Object System.Drawing.Point(220,$yPos)
-$textPSWD.Size = New-Object System.Drawing.Size(250,20)
+$textPSWD.Location = New-Object System.Drawing.Point(170, $yPos)
+$textPSWD.Size = New-Object System.Drawing.Size(200, 20)
 $textPSWD.PasswordChar = '*'
 $form.Controls.Add($textPSWD)
-$yPos += 30
-
-# Champ pour le port
-$labelPort = New-Object System.Windows.Forms.Label
-$labelPort.Location = New-Object System.Drawing.Point(10,$yPos)
-$labelPort.Size = New-Object System.Drawing.Size(200,20)
-$labelPort.Text = "Port (défaut: 13422):"
-$form.Controls.Add($labelPort)
-
-$textPort = New-Object System.Windows.Forms.TextBox
-$textPort.Location = New-Object System.Drawing.Point(220,$yPos)
-$textPort.Size = New-Object System.Drawing.Size(250,20)
-$textPort.Text = "13422"
-$form.Controls.Add($textPort)
 $yPos += 40
 
-# Bouton de test et détection
+# Bouton de test individuel
 $buttonTest = New-Object System.Windows.Forms.Button
-$buttonTest.Location = New-Object System.Drawing.Point(150,$yPos)
-$buttonTest.Size = New-Object System.Drawing.Size(200,30)
-$buttonTest.Text = "Tester la connexion et détecter"
+$buttonTest.Location = New-Object System.Drawing.Point(10, $yPos)
+$buttonTest.Size = New-Object System.Drawing.Size(200, 30)
+$buttonTest.Text = "Tester ce client"
 $form.Controls.Add($buttonTest)
-$yPos += 40
 
-# Bouton de backup de configuration
+# Bouton de backup
 $buttonBackup = New-Object System.Windows.Forms.Button
-$buttonBackup.Location = New-Object System.Drawing.Point(150,$yPos)
-$buttonBackup.Size = New-Object System.Drawing.Size(200,30)
-$buttonBackup.Text = "Backup de la configuration"
+$buttonBackup.Location = New-Object System.Drawing.Point(220, $yPos)
+$buttonBackup.Size = New-Object System.Drawing.Size(200, 30)
+$buttonBackup.Text = "Backup configuration"
 $form.Controls.Add($buttonBackup)
 $yPos += 40
 
 # Séparateur
 $separator = New-Object System.Windows.Forms.Label
-$separator.Location = New-Object System.Drawing.Point(10,$yPos)
-$separator.Size = New-Object System.Drawing.Size(760,2)
+$separator.Location = New-Object System.Drawing.Point(10, $yPos)
+$separator.Size = New-Object System.Drawing.Size(860, 2)
 $separator.BorderStyle = [System.Windows.Forms.BorderStyle]::Fixed3D
 $form.Controls.Add($separator)
 $yPos += 20
 
-# Label pour afficher les infos détectées
-$labelDetected = New-Object System.Windows.Forms.Label
-$labelDetected.Location = New-Object System.Drawing.Point(10,$yPos)
-$labelDetected.Size = New-Object System.Drawing.Size(760,40)
-$labelDetected.Text = "Aucune information détectée"
-$form.Controls.Add($labelDetected)
-$yPos += 50
+# Section mise à jour
+$labelUpdate = New-Object System.Windows.Forms.Label
+$labelUpdate.Location = New-Object System.Drawing.Point(10, $yPos)
+$labelUpdate.Size = New-Object System.Drawing.Size(200, 20)
+$labelUpdate.Text = "Options de mise à jour:"
+$form.Controls.Add($labelUpdate)
+$yPos += 25
 
-# Label et ComboBox pour la catégorie
+# Catégorie et modèle
 $labelCategorie = New-Object System.Windows.Forms.Label
-$labelCategorie.Location = New-Object System.Drawing.Point(10,$yPos)
-$labelCategorie.Size = New-Object System.Drawing.Size(200,20)
-$labelCategorie.Text = "Sélectionnez la catégorie:"
+$labelCategorie.Location = New-Object System.Drawing.Point(10, $yPos)
+$labelCategorie.Size = New-Object System.Drawing.Size(150, 20)
+$labelCategorie.Text = "Catégorie:"
 $form.Controls.Add($labelCategorie)
 
 $comboCategorie = New-Object System.Windows.Forms.ComboBox
-$comboCategorie.Location = New-Object System.Drawing.Point(220,$yPos)
-$comboCategorie.Size = New-Object System.Drawing.Size(250,20)
+$comboCategorie.Location = New-Object System.Drawing.Point(170, $yPos)
+$comboCategorie.Size = New-Object System.Drawing.Size(200, 20)
 $comboCategorie.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
 $modeles.Keys | ForEach-Object { $comboCategorie.Items.Add($_) }
 $form.Controls.Add($comboCategorie)
-$yPos += 30
 
-# Label et ComboBox pour le modèle spécifique
 $labelModele = New-Object System.Windows.Forms.Label
-$labelModele.Location = New-Object System.Drawing.Point(10,$yPos)
-$labelModele.Size = New-Object System.Drawing.Size(200,20)
-$labelModele.Text = "Sélectionnez le modèle:"
+$labelModele.Location = New-Object System.Drawing.Point(380, $yPos)
+$labelModele.Size = New-Object System.Drawing.Size(150, 20)
+$labelModele.Text = "Modèle:"
 $form.Controls.Add($labelModele)
 
 $comboModele = New-Object System.Windows.Forms.ComboBox
-$comboModele.Location = New-Object System.Drawing.Point(220,$yPos)
-$comboModele.Size = New-Object System.Drawing.Size(250,20)
+$comboModele.Location = New-Object System.Drawing.Point(440, $yPos)
+$comboModele.Size = New-Object System.Drawing.Size(200, 20)
 $comboModele.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
 $form.Controls.Add($comboModele)
 $yPos += 30
 
 # Options de version
-$labelVersion = New-Object System.Windows.Forms.Label
-$labelVersion.Location = New-Object System.Drawing.Point(10,$yPos)
-$labelVersion.Size = New-Object System.Drawing.Size(200,20)
-$labelVersion.Text = "Options de version:"
-$form.Controls.Add($labelVersion)
-
 $radioDerniere = New-Object System.Windows.Forms.RadioButton
-$radioDerniere.Location = New-Object System.Drawing.Point(220,$yPos)
-$radioDerniere.Size = New-Object System.Drawing.Size(250,20)
+$radioDerniere.Location = New-Object System.Drawing.Point(10, $yPos)
+$radioDerniere.Size = New-Object System.Drawing.Size(250, 20)
 $radioDerniere.Text = "Utiliser la dernière version"
 $radioDerniere.Checked = $true
 $form.Controls.Add($radioDerniere)
-$yPos += 25
 
 $radioChoisir = New-Object System.Windows.Forms.RadioButton
-$radioChoisir.Location = New-Object System.Drawing.Point(220,$yPos)
-$radioChoisir.Size = New-Object System.Drawing.Size(250,20)
+$radioChoisir.Location = New-Object System.Drawing.Point(260, $yPos)
+$radioChoisir.Size = New-Object System.Drawing.Size(250, 20)
 $radioChoisir.Text = "Choisir une version spécifique"
 $form.Controls.Add($radioChoisir)
-$yPos += 30
+$yPos += 25
 
 # Bouton pour sélectionner le fichier
 $buttonSelect = New-Object System.Windows.Forms.Button
-$buttonSelect.Location = New-Object System.Drawing.Point(220,$yPos)
-$buttonSelect.Size = New-Object System.Drawing.Size(250,30)
+$buttonSelect.Location = New-Object System.Drawing.Point(10, $yPos)
+$buttonSelect.Size = New-Object System.Drawing.Size(300, 30)
 $buttonSelect.Text = "Sélectionner le fichier .maj"
 $buttonSelect.Enabled = $false
 $form.Controls.Add($buttonSelect)
 $yPos += 40
 
-# Bouton OK
-$buttonOK = New-Object System.Windows.Forms.Button
-$buttonOK.Location = New-Object System.Drawing.Point(150,$yPos)
-$buttonOK.Size = New-Object System.Drawing.Size(100,30)
-$buttonOK.Text = "Lancer la mise à jour"
-$buttonOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
-$form.AcceptButton = $buttonOK
-$form.Controls.Add($buttonOK)
+# Boutons d'action
+$buttonUpdateSelected = New-Object System.Windows.Forms.Button
+$buttonUpdateSelected.Location = New-Object System.Drawing.Point(10, $yPos)
+$buttonUpdateSelected.Size = New-Object System.Drawing.Size(200, 30)
+$buttonUpdateSelected.Text = "Mettre à jour sélection"
+$form.Controls.Add($buttonUpdateSelected)
 
-# Bouton pour lancer la mise à jour pour tous les clients
-$buttonUpdateAll = New-Object System.Windows.Forms.Button
-$buttonUpdateAll.Location = New-Object System.Drawing.Point(260,$yPos)
-$buttonUpdateAll.Size = New-Object System.Drawing.Size(150,30)
-$buttonUpdateAll.Text = "Mettre à jour tous"
-$form.Controls.Add($buttonUpdateAll)
+$buttonUpdateAllOK = New-Object System.Windows.Forms.Button
+$buttonUpdateAllOK.Location = New-Object System.Drawing.Point(220, $yPos)
+$buttonUpdateAllOK.Size = New-Object System.Drawing.Size(200, 30)
+$buttonUpdateAllOK.Text = "Mettre à jour tous (OK)"
+$form.Controls.Add($buttonUpdateAllOK)
 
-# Bouton Annuler
 $buttonCancel = New-Object System.Windows.Forms.Button
-$buttonCancel.Location = New-Object System.Drawing.Point(420,$yPos)
-$buttonCancel.Size = New-Object System.Drawing.Size(100,30)
-$buttonCancel.Text = "Annuler"
-$buttonCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-$form.CancelButton = $buttonCancel
+$buttonCancel.Location = New-Object System.Drawing.Point(430, $yPos)
+$buttonCancel.Size = New-Object System.Drawing.Size(100, 30)
+$buttonCancel.Text = "Fermer"
 $form.Controls.Add($buttonCancel)
 
 # Gestionnaire d'événements pour la sélection de catégorie
@@ -333,7 +364,9 @@ $comboCategorie.Add_SelectedIndexChanged({
     $comboModele.Items.Clear()
     $selectedCategorie = $comboCategorie.SelectedItem
     $modeles[$selectedCategorie] | ForEach-Object { $comboModele.Items.Add($_) }
-    $comboModele.SelectedIndex = 0
+    if ($comboModele.Items.Count -gt 0) {
+        $comboModele.SelectedIndex = 0
+    }
 })
 
 # Gestionnaire d'événements pour le choix de version
@@ -354,98 +387,195 @@ $buttonSelect.Add_Click({
     }
 })
 
-# Gestionnaire d'événements pour le bouton de test
+# Gestionnaire d'événements pour le bouton de test individuel
 $buttonTest.Add_Click({
-    # Récupérer les valeurs des champs
-    $IP = $textIP.Text
-    $User = $textUser.Text
-    $PSWD = $textPSWD.Text
-    $Port = $textPort.Text
-
-    # Validation des champs obligatoires
-    if ([string]::IsNullOrEmpty($IP) -or [string]::IsNullOrEmpty($User) -or [string]::IsNullOrEmpty($PSWD)) {
-        [System.Windows.Forms.MessageBox]::Show("Veuillez remplir l'IP, l'utilisateur et le mot de passe pour le test!", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    if ($listClients.SelectedItems.Count -ne 1) {
+        [System.Windows.Forms.MessageBox]::Show("Veuillez sélectionner un seul client à tester", "Information", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         return
     }
 
-    try {
-        # Convert password to secure string and create credentials
-        $PASSWORD = ConvertTo-SecureString -String $PSWD -AsPlainText -Force
-        $Credential = New-Object -TypeName System.Management.Automation.PSCredential ($User, $PASSWORD)
+    $selectedItem = $listClients.SelectedItems[0]
+    $client = [PSCustomObject]@{
+        IP = $selectedItem.SubItems[1].Text
+        Nom = $selectedItem.Text
+        Utilisateur = $textUser.Text
+        MotDePasse = $textPSWD.Text
+        Port = $textPort.Text
+    }
 
-        # SSH connection
-        $sessionParams = @{
-            ComputerName = $IP
-            Credential   = $Credential
-            AcceptKey    = $true
-            Port         = $Port
+    $result = Test-FirewallConnection -client $client
+
+    if ($result.Status -eq "Success") {
+        $selectedItem.SubItems[2].Text = $result.Model
+        $selectedItem.SubItems[3].Text = $result.Version
+        $selectedItem.SubItems[4].Text = "OK"
+        $selectedItem.BackColor = [System.Drawing.Color]::LightGreen
+    } else {
+        $selectedItem.SubItems[4].Text = "Erreur"
+        $selectedItem.BackColor = [System.Drawing.Color]::LightCoral
+    }
+})
+
+# Gestionnaire d'événements pour le bouton de test tous
+$buttonTestAll.Add_Click({
+    if ($listClients.Items.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show("Aucun client à tester", "Information", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        return
+    }
+
+    # Créer un formulaire de progression
+    $progressForm = New-Object System.Windows.Forms.Form
+    $progressForm.Text = "Test des connexions"
+    $progressForm.Size = New-Object System.Drawing.Size(400, 150)
+    $progressForm.StartPosition = "CenterScreen"
+    $progressForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+    $progressForm.MaximizeBox = $false
+    $progressForm.MinimizeBox = $false
+
+    $progressLabel = New-Object System.Windows.Forms.Label
+    $progressLabel.Location = New-Object System.Drawing.Point(10, 20)
+    $progressLabel.Size = New-Object System.Drawing.Size(380, 20)
+    $progressLabel.Text = "Test des connexions en cours..."
+    $progressForm.Controls.Add($progressLabel)
+
+    $progressBar = New-Object System.Windows.Forms.ProgressBar
+    $progressBar.Location = New-Object System.Drawing.Point(10, 50)
+    $progressBar.Size = New-Object System.Drawing.Size(380, 20)
+    $progressBar.Minimum = 0
+    $progressBar.Maximum = $listClients.Items.Count
+    $progressForm.Controls.Add($progressBar)
+
+    # Afficher le formulaire de progression
+    $progressForm.Show()
+    $progressForm.Refresh()
+
+    # Tester chaque client
+    for ($i = 0; $i -lt $listClients.Items.Count; $i++) {
+        $item = $listClients.Items[$i]
+        $progressBar.Value = $i + 1
+        $progressLabel.Text = "Test de $($item.Text) ($($item.SubItems[1].Text))..."
+        $progressForm.Refresh()
+
+        $client = [PSCustomObject]@{
+            IP = $item.SubItems[1].Text
+            Nom = $item.Text
+            Utilisateur = $textUser.Text # Utilise les credentials du formulaire
+            MotDePasse = $textPSWD.Text
+            Port = $textPort.Text
         }
 
-        $sessionssh = New-SSHSession @sessionParams -ErrorAction Stop
-        
-        # Récupérer les informations du firewall
-        $versionInfo = Invoke-SSHCommand -SSHSession $sessionssh -Command "getversion" -ErrorAction Stop
-        $licenseInfo = Invoke-SSHCommand -SSHSession $sessionssh -Command "getlicense" -ErrorAction Stop
-        $systemInfo = Invoke-SSHCommand -SSHSession $sessionssh -Command "system info" -ErrorAction Stop
-        $modelInfo = Invoke-SSHCommand -SSHSession $sessionssh -Command "getmodel" -ErrorAction Stop
-        
-        Remove-SSHSession -SSHSession $sessionssh | Out-Null
+        $result = Test-FirewallConnection -client $client
 
-        # Analyser les informations
-        $version = $versionInfo.Output | Where-Object { $_ -match "Version" } | Select-Object -First 1
-        $model = $systemInfo.Output | Where-Object { $_ -match "Model" } | Select-Object -First 1
-        $serial = $systemInfo.Output | Where-Object { $_ -match "Serial" } | Select-Object -First 1
-        $licenseStatus = $licenseInfo.Output | Where-Object { $_ -match "Status" } | Select-Object -First 1
-        $modelName = $modelInfo.Output | Select-Object -First 1
-
-        # Nettoyer le nom du modèle
-        $modelName = $modelName.Trim()
-        
-        # Déterminer la catégorie
-        $category = Get-StormshieldCategory -model $modelName
-        
-        if ($null -eq $category) {
-            $category = "Inconnue"
-            $labelDetected.Text = "Modèle détecté: $modelName`nCatégorie: $category`nImpossible de déterminer automatiquement la catégorie"
+        if ($result.Status -eq "Success") {
+            $item.SubItems[2].Text = $result.Model
+            $item.SubItems[3].Text = $result.Version
+            $item.SubItems[4].Text = "OK"
+            $item.BackColor = [System.Drawing.Color]::LightGreen
         } else {
-            $labelDetected.Text = "Modèle détecté: $modelName`nCatégorie: $category"
-            
-            # Sélectionner automatiquement la catégorie et le modèle
-            $comboCategorie.SelectedItem = $category
-            $comboModele.SelectedItem = $modelName
+            $item.SubItems[4].Text = "Erreur"
+            $item.BackColor = [System.Drawing.Color]::LightCoral
         }
 
-        # Afficher les informations dans une boîte de dialogue
-        $message = @"
-Informations du firewall:
-$version
-Modèle: $modelName
-$model
-$serial
-Catégorie: $category
-État de la licence: $licenseStatus
-"@
+        $listClients.Refresh()
+    }
 
-        [System.Windows.Forms.MessageBox]::Show($message, "Résultats du test", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+    $progressForm.Close()
+    [System.Windows.Forms.MessageBox]::Show("Test des connexions terminé", "Information", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+})
 
-    } catch {
-        [System.Windows.Forms.MessageBox]::Show("Erreur lors du test de connexion: $_", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+# Gestionnaire d'événements pour le bouton d'ajout de client
+$buttonAddClient.Add_Click({
+    if ([string]::IsNullOrEmpty($textClient.Text) -or [string]::IsNullOrEmpty($textIP.Text)) {
+        [System.Windows.Forms.MessageBox]::Show("Veuillez saisir au moins un nom et une adresse IP", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        return
+    }
+
+    $item = New-Object System.Windows.Forms.ListViewItem($textClient.Text)
+    $item.SubItems.Add($textIP.Text) | Out-Null
+    $item.SubItems.Add("") | Out-Null # Modèle
+    $item.SubItems.Add("") | Out-Null # Version
+    $item.SubItems.Add("Non testé") | Out-Null # Statut
+    $listClients.Items.Add($item)
+})
+
+# Gestionnaire d'événements pour le bouton de suppression
+$buttonRemoveClient.Add_Click({
+    if ($listClients.SelectedItems.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show("Veuillez sélectionner au moins un client à supprimer", "Information", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        return
+    }
+
+    foreach ($item in $listClients.SelectedItems) {
+        $listClients.Items.Remove($item)
+    }
+})
+
+# Gestionnaire d'événements pour le bouton de sauvegarde
+$buttonSave.Add_Click({
+    $clients = @()
+    foreach ($item in $listClients.Items) {
+        $client = [PSCustomObject]@{
+            Nom = $item.Text
+            IP = $item.SubItems[1].Text
+            Modele = $item.SubItems[2].Text
+            Version = $item.SubItems[3].Text
+            Statut = $item.SubItems[4].Text
+        }
+        $clients += $client
+    }
+
+    if (Save-ClientsToCSV -filePath $defaultCsvPath -clients $clients) {
+        [System.Windows.Forms.MessageBox]::Show("Clients sauvegardés avec succès", "Information", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+    }
+})
+
+# Gestionnaire d'événements pour le bouton de chargement
+$buttonLoad.Add_Click({
+    $clients = Load-ClientsFromCSV -filePath $defaultCsvPath
+    $listClients.Items.Clear()
+    
+    foreach ($client in $clients) {
+        $item = New-Object System.Windows.Forms.ListViewItem($client.Nom)
+        $item.SubItems.Add($client.IP) | Out-Null
+        $item.SubItems.Add($client.Modele) | Out-Null
+        $item.SubItems.Add($client.Version) | Out-Null
+        $item.SubItems.Add($client.Statut) | Out-Null
+        
+        # Colorer en fonction du statut
+        if ($client.Statut -eq "OK") {
+            $item.BackColor = [System.Drawing.Color]::LightGreen
+        } elseif ($client.Statut -eq "Erreur") {
+            $item.BackColor = [System.Drawing.Color]::LightCoral
+        }
+        
+        $listClients.Items.Add($item)
+    }
+})
+
+# Gestionnaire d'événements pour la sélection dans la liste
+$listClients.Add_SelectedIndexChanged({
+    if ($listClients.SelectedItems.Count -eq 1) {
+        $selectedItem = $listClients.SelectedItems[0]
+        $textClient.Text = $selectedItem.Text
+        $textIP.Text = $selectedItem.SubItems[1].Text
+        $textPort.Text = "13422" # Réinitialiser le port par défaut
     }
 })
 
 # Gestionnaire d'événements pour le bouton de backup
 $buttonBackup.Add_Click({
-    # Récupérer les valeurs des champs
-    $IP = $textIP.Text
-    $Client = $textClient.Text
-    $User = $textUser.Text
-    $PSWD = $textPSWD.Text
-    $Port = $textPort.Text
-
-    # Validation des champs obligatoires
-    if ([string]::IsNullOrEmpty($IP) -or [string]::IsNullOrEmpty($Client) -or [string]::IsNullOrEmpty($User) -or [string]::IsNullOrEmpty($PSWD)) {
-        [System.Windows.Forms.MessageBox]::Show("Veuillez remplir tous les champs obligatoires pour le backup!", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    if ($listClients.SelectedItems.Count -ne 1) {
+        [System.Windows.Forms.MessageBox]::Show("Veuillez sélectionner un seul client", "Information", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         return
+    }
+
+    $selectedItem = $listClients.SelectedItems[0]
+    $client = [PSCustomObject]@{
+        IP = $selectedItem.SubItems[1].Text
+        Nom = $selectedItem.Text
+        Utilisateur = $textUser.Text
+        MotDePasse = $textPSWD.Text
+        Port = $textPort.Text
     }
 
     try {
@@ -457,19 +587,19 @@ $buttonBackup.Add_Click({
 
         # Générer le nom de fichier avec la date
         $date = Get-Date -Format "yyyyMMdd-HHmmss"
-        $backupFile = "$backupDir\$Client-config-$date.ncfg"
+        $backupFile = "$backupDir\$($client.Nom)-config-$date.ncfg"
 
         # Convert password to secure string and create credentials
-        $PASSWORD = ConvertTo-SecureString -String $PSWD -AsPlainText -Force
-        $Credential = New-Object -TypeName System.Management.Automation.PSCredential ($User, $PASSWORD)
-        $WSCPLogin = "$User" + ":" + "$PSWD"
+        $PASSWORD = ConvertTo-SecureString -String $client.MotDePasse -AsPlainText -Force
+        $Credential = New-Object -TypeName System.Management.Automation.PSCredential ($client.Utilisateur, $PASSWORD)
+        $WSCPLogin = "$($client.Utilisateur)" + ":" + "$($client.MotDePasse)"
 
         # Exporter la configuration via SSH
         $sessionParams = @{
-            ComputerName = $IP
+            ComputerName = $client.IP
             Credential   = $Credential
             AcceptKey    = $true
-            Port         = $Port
+            Port         = $client.Port
         }
 
         $sessionssh = New-SSHSession @sessionParams -ErrorAction Stop
@@ -479,7 +609,7 @@ $buttonBackup.Add_Click({
         
         # Télécharger le fichier via WinSCP
         & "C:\Program Files (x86)\WinSCP\WinSCP.com" /command `
-            "open scp://$WSCPLogin@$IP`:$Port -hostkey=`"*`"" `
+            "open scp://$WSCPLogin@$($client.IP)`:$($client.Port) -hostkey=`"*`"" `
             "get `"/usr/Firewall/Update/export.ncfg`" `"$backupFile`"" `
             "exit"
         
@@ -494,125 +624,22 @@ $buttonBackup.Add_Click({
     }
 })
 
-# Gestionnaire d'événements pour le bouton de chargement CSV
-$buttonLoadCSV.Add_Click({
-    $fileDialog = New-Object System.Windows.Forms.OpenFileDialog
-    $fileDialog.Title = "Sélectionnez le fichier CSV des clients"
-    $fileDialog.Filter = "Fichiers CSV (*.csv)|*.csv"
-    $fileDialog.InitialDirectory = $PSScriptRoot
-    
-    if ($fileDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-        $clients = Load-ClientsFromCSV -filePath $fileDialog.FileName
-        if ($clients) {
-            $listClients.Items.Clear()
-            $clients | ForEach-Object { $listClients.Items.Add($_) }
-            $script:ClientsCSVPath = $fileDialog.FileName
-            [System.Windows.Forms.MessageBox]::Show("Clients chargés avec succès!", "Succès", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-        }
-    }
-})
-
-# Gestionnaire d'événements pour le bouton de sauvegarde CSV
-$buttonSaveCSV.Add_Click({
-    if ($listClients.Items.Count -eq 0) {
-        [System.Windows.Forms.MessageBox]::Show("Aucun client à sauvegarder!", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-        return
-    }
-
-    $fileDialog = New-Object System.Windows.Forms.SaveFileDialog
-    $fileDialog.Title = "Enregistrer le fichier CSV des clients"
-    $fileDialog.Filter = "Fichiers CSV (*.csv)|*.csv"
-    $fileDialog.InitialDirectory = $PSScriptRoot
-    $fileDialog.FileName = "clients_stormshield.csv"
-    
-    if ($fileDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-        $clients = @()
-        foreach ($item in $listClients.Items) {
-            $clients += $item
-        }
-        $clients | Export-Csv -Path $fileDialog.FileName -Delimiter ";" -NoTypeInformation -Force
-        $script:ClientsCSVPath = $fileDialog.FileName
-        [System.Windows.Forms.MessageBox]::Show("Clients sauvegardés avec succès!", "Succès", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-    }
-})
-
-# Gestionnaire d'événements pour le bouton d'ajout de client
-$buttonAddClient.Add_Click({
-    # Vérifier que tous les champs sont remplis
-    if ([string]::IsNullOrEmpty($textIP.Text) -or [string]::IsNullOrEmpty($textClient.Text) -or [string]::IsNullOrEmpty($textUser.Text) -or [string]::IsNullOrEmpty($textPSWD.Text)) {
-        [System.Windows.Forms.MessageBox]::Show("Veuillez remplir tous les champs obligatoires pour ajouter un client!", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-        return
-    }
-
-    # Créer un nouvel objet client
-    $newClient = [PSCustomObject]@{
-        IP = $textIP.Text
-        Nom = $textClient.Text
-        Utilisateur = $textUser.Text
-        MotDePasse = $textPSWD.Text
-        Port = $textPort.Text
-    }
-
-    # Ajouter le client à la liste
-    $listClients.Items.Add($newClient)
-    
-    # Si un fichier CSV est déjà chargé, sauvegarder automatiquement
-    if ($script:ClientsCSVPath) {
-        Save-ClientToCSV -filePath $script:ClientsCSVPath -client $newClient
-    }
-
-    [System.Windows.Forms.MessageBox]::Show("Client ajouté avec succès!", "Succès", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-})
-
-# Gestionnaire d'événements pour le bouton de suppression de client
-$buttonRemoveClient.Add_Click({
-    if ($listClients.SelectedItem -eq $null) {
-        [System.Windows.Forms.MessageBox]::Show("Veuillez sélectionner un client à supprimer!", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-        return
-    }
-
-    $listClients.Items.Remove($listClients.SelectedItem)
-    
-    # Si un fichier CSV est déjà chargé, sauvegarder automatiquement
-    if ($script:ClientsCSVPath) {
-        $clients = @()
-        foreach ($item in $listClients.Items) {
-            $clients += $item
-        }
-        $clients | Export-Csv -Path $script:ClientsCSVPath -Delimiter ";" -NoTypeInformation -Force
-    }
-
-    [System.Windows.Forms.MessageBox]::Show("Client supprimé avec succès!", "Succès", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-})
-
-# Gestionnaire d'événements pour la sélection d'un client dans la liste
-$listClients.Add_SelectedIndexChanged({
-    if ($listClients.SelectedItem -ne $null) {
-        $selectedClient = $listClients.SelectedItem
-        $textIP.Text = $selectedClient.IP
-        $textClient.Text = $selectedClient.Nom
-        $textUser.Text = $selectedClient.Utilisateur
-        $textPSWD.Text = $selectedClient.MotDePasse
-        $textPort.Text = $selectedClient.Port
-    }
-})
-
-# Gestionnaire d'événements pour le bouton de mise à jour pour tous les clients
-$buttonUpdateAll.Add_Click({
-    if ($listClients.Items.Count -eq 0) {
-        [System.Windows.Forms.MessageBox]::Show("Aucun client à mettre à jour!", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+# Gestionnaire d'événements pour le bouton de mise à jour sélection
+$buttonUpdateSelected.Add_Click({
+    if ($listClients.SelectedItems.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show("Veuillez sélectionner au moins un client", "Information", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         return
     }
 
     # Vérifier les paramètres de mise à jour
     if ($comboCategorie.SelectedItem -eq $null -or $comboModele.SelectedItem -eq $null) {
-        [System.Windows.Forms.MessageBox]::Show("Veuillez sélectionner une catégorie et un modèle!", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        [System.Windows.Forms.MessageBox]::Show("Veuillez sélectionner une catégorie et un modèle", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
         return
     }
 
     # Vérifier si un fichier est nécessaire et sélectionné
     if ($radioChoisir.Checked -and (-not $script:UpdateFilePath)) {
-        [System.Windows.Forms.MessageBox]::Show("Aucun fichier de mise à jour sélectionné!", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        [System.Windows.Forms.MessageBox]::Show("Aucun fichier de mise à jour sélectionné", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
         return
     }
 
@@ -639,44 +666,36 @@ $buttonUpdateAll.Add_Click({
         
         if ($latestFirmware) {
             $script:UpdateFilePath = $latestFirmware.FullName
-            Write-Host "Firmware sélectionné: $($latestFirmware.Name)"
         } else {
             [System.Windows.Forms.MessageBox]::Show("Aucun firmware trouvé dans le dossier $firmwareDir", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
             return
         }
     }
 
-    # Demander confirmation
-    $confirm = [System.Windows.Forms.MessageBox]::Show("Êtes-vous sûr de vouloir mettre à jour tous les clients ($($listClients.Items.Count) clients)?", "Confirmation", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
-    if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) {
-        return
-    }
-
     # Créer un formulaire de progression
     $progressForm = New-Object System.Windows.Forms.Form
-    $progressForm.Text = "Progression des mises à jour"
-    $progressForm.Size = New-Object System.Drawing.Size(500,200)
+    $progressForm.Text = "Mise à jour en cours"
+    $progressForm.Size = New-Object System.Drawing.Size(500, 200)
     $progressForm.StartPosition = "CenterScreen"
     $progressForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
     $progressForm.MaximizeBox = $false
     $progressForm.MinimizeBox = $false
 
     $progressLabel = New-Object System.Windows.Forms.Label
-    $progressLabel.Location = New-Object System.Drawing.Point(10,20)
-    $progressLabel.Size = New-Object System.Drawing.Size(460,20)
-    $progressLabel.Text = "Préparation des mises à jour..."
+    $progressLabel.Location = New-Object System.Drawing.Point(10, 20)
+    $progressLabel.Size = New-Object System.Drawing.Size(480, 20)
     $progressForm.Controls.Add($progressLabel)
 
     $progressBar = New-Object System.Windows.Forms.ProgressBar
-    $progressBar.Location = New-Object System.Drawing.Point(10,50)
-    $progressBar.Size = New-Object System.Drawing.Size(460,20)
+    $progressBar.Location = New-Object System.Drawing.Point(10, 50)
+    $progressBar.Size = New-Object System.Drawing.Size(480, 20)
     $progressBar.Minimum = 0
-    $progressBar.Maximum = $listClients.Items.Count
+    $progressBar.Maximum = $listClients.SelectedItems.Count
     $progressForm.Controls.Add($progressBar)
 
     $progressDetails = New-Object System.Windows.Forms.TextBox
-    $progressDetails.Location = New-Object System.Drawing.Point(10,80)
-    $progressDetails.Size = New-Object System.Drawing.Size(460,80)
+    $progressDetails.Location = New-Object System.Drawing.Point(10, 80)
+    $progressDetails.Size = New-Object System.Drawing.Size(480, 100)
     $progressDetails.Multiline = $true
     $progressDetails.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
     $progressDetails.ReadOnly = $true
@@ -686,17 +705,23 @@ $buttonUpdateAll.Add_Click({
     $progressForm.Show()
     $progressForm.Refresh()
 
-    # Traiter chaque client
     $successCount = 0
     $errorCount = 0
     $currentIndex = 0
 
-    foreach ($client in $listClients.Items) {
+    foreach ($item in $listClients.SelectedItems) {
         $currentIndex++
         $progressBar.Value = $currentIndex
-        $progressLabel.Text = "Traitement du client $currentIndex/$($listClients.Items.Count) - $($client.Nom)"
-        $progressDetails.AppendText("Début de la mise à jour pour $($client.Nom) ($($client.IP))...`r`n")
+        $progressLabel.Text = "Mise à jour de $($item.Text) ($($item.SubItems[1].Text))..."
         $progressForm.Refresh()
+
+        $client = [PSCustomObject]@{
+            IP = $item.SubItems[1].Text
+            Nom = $item.Text
+            Utilisateur = $textUser.Text
+            MotDePasse = $textPSWD.Text
+            Port = $textPort.Text
+        }
 
         try {
             # Convert password to secure string and create credentials
@@ -715,263 +740,324 @@ $buttonUpdateAll.Add_Click({
             }
 
             # Clear any existing trusted hosts
-            Get-SSHTrustedHost | Remove-SSHTrustedHost 
-
-            ## SFTP Connection + upload the update file
-            Add-Content -Path $logfile -Value "------------------------------------------"
-            Add-Content -Path $logfile -Value "WINSCP upload started at $(Get-Date)"
-            Add-Content -Path $logfile -Value "------------------------------------------"
-            Add-Content -Path $logfile -Value "Client: $($client.Nom)"
-            Add-Content -Path $logfile -Value "IP: $($client.IP)"
-            Add-Content -Path $logfile -Value "Utilisateur: $($client.Utilisateur)"
-            Add-Content -Path $logfile -Value "Modèle sélectionné: $($comboModele.SelectedItem)"
-            Add-Content -Path $logfile -Value "Firmware utilisé: $(Split-Path $script:UpdateFilePath -Leaf)"
-
-            try {
-                # WinSCP upload command
-                & "C:\Program Files (x86)\WinSCP\WinSCP.com" /command `
-                    "open scp://$WSCPLogin@$($client.IP)`:$($client.Port) -hostkey=`"*`"" `
-                    "put `"$script:UpdateFilePath`" `"/usr/Firewall/Update/`"" `
-                    "exit"
-                
-                Add-Content -Path $logfile -Value "File uploaded successfully"
-                $progressDetails.AppendText("Fichier de mise à jour uploadé avec succès`r`n")
-            } catch {
-                Add-Content -Path $logfile -Value "Error during WinSCP upload: $_"
-                $progressDetails.AppendText("ERREUR lors de l'upload du fichier: $_`r`n")
-                throw "Erreur upload"
-            }
-
-            ## SSH connection + update
-            try {
-                $sessionParams = @{
-                    ComputerName = $client.IP
-                    Credential   = $Credential
-                    AcceptKey    = $true
-                    Port         = $client.Port
+            Get
+                        # SFTP Connection + upload the update file
+                        $progressDetails.AppendText("Upload du fichier de mise à jour...`r`n")
+                        $progressForm.Refresh()
+            
+                        try {
+                            # WinSCP upload command
+                            & "C:\Program Files (x86)\WinSCP\WinSCP.com" /command `
+                                "open scp://$WSCPLogin@$($client.IP)`:$($client.Port) -hostkey=`"*`"" `
+                                "put `"$script:UpdateFilePath`" `"/usr/Firewall/Update/`"" `
+                                "exit"
+                            
+                            $progressDetails.AppendText("Fichier uploadé avec succès`r`n")
+                        } catch {
+                            $progressDetails.AppendText("ERREUR lors de l'upload: $_`r`n")
+                            throw "Erreur upload"
+                        }
+            
+                        ## SSH connection + update
+                        try {
+                            $sessionParams = @{
+                                ComputerName = $client.IP
+                                Credential   = $Credential
+                                AcceptKey    = $true
+                                Port         = $client.Port
+                            }
+            
+                            $sessionssh = New-SSHSession @sessionParams -ErrorAction Stop
+                            
+                            $progressDetails.AppendText("Récupération de la version actuelle...`r`n")
+                            $preVersion = Invoke-SSHCommand -SSHSession $sessionssh -Command "getversion" -ErrorAction Stop
+                            
+                            $progressDetails.AppendText("Lancement de la mise à jour...`r`n")
+                            $updateResult = Invoke-SSHCommand -SSHSession $sessionssh -Command "fwupdate -r -f /usr/Firewall/Update/$(Split-Path $script:UpdateFilePath -Leaf)" -ErrorAction Stop
+                            
+                            Remove-SSHSession -SSHSession $sessionssh | Out-Null
+                            
+                            $progressDetails.AppendText("Mise à jour lancée, attente de 10 minutes...`r`n")
+                            $progressForm.Refresh()
+                            
+                            ## Sleep for 10 mins needed to let the update do its job
+                            Start-Sleep -Seconds 600
+                            
+                            ## Verify update
+                            $sessionssh = New-SSHSession @sessionParams -ErrorAction Stop
+                            $postVersion = Invoke-SSHCommand -SSHSession $sessionssh -Command "getversion" -ErrorAction Stop
+                            Remove-SSHSession -SSHSession $sessionssh | Out-Null
+                            
+                            $progressDetails.AppendText("Mise à jour terminée avec succès!`r`n")
+                            $progressDetails.AppendText("Ancienne version: $($preVersion.Output)`r`n")
+                            $progressDetails.AppendText("Nouvelle version: $($postVersion.Output)`r`n")
+                            
+                            $item.SubItems[3].Text = ($postVersion.Output | Where-Object { $_ -match "Version" } | Select-Object -First 1)
+                            $item.SubItems[4].Text = "Mis à jour"
+                            $item.BackColor = [System.Drawing.Color]::LightGreen
+                            $successCount++
+                        } catch {
+                            $progressDetails.AppendText("ERREUR lors de la mise à jour: $_`r`n")
+                            $item.SubItems[4].Text = "Échec mise à jour"
+                            $item.BackColor = [System.Drawing.Color]::LightCoral
+                            $errorCount++
+                        }
+                    } catch {
+                        $progressDetails.AppendText("ERREUR lors du traitement: $_`r`n")
+                        $item.SubItems[4].Text = "Erreur"
+                        $item.BackColor = [System.Drawing.Color]::LightCoral
+                        $errorCount++
+                    }
+                    
+                    $listClients.Refresh()
+                    $progressForm.Refresh()
                 }
-
-                $sessionssh = New-SSHSession @sessionParams -ErrorAction Stop
+            
+                # Fermer le formulaire de progression
+                $progressForm.Close()
+            
+                # Afficher un récapitulatif
+                $message = "Mises à jour terminées!`r`n"
+                $message += "Clients traités: $($listClients.SelectedItems.Count)`r`n"
+                $message += "Mises à jour réussies: $successCount`r`n"
+                $message += "Échecs: $errorCount"
                 
-                Add-Content -Path $logfile -Value "------------------------------------------"
-                Add-Content -Path $logfile -Value "Firmware version before the update"
-                Add-Content -Path $logfile -Value "------------------------------------------"
-                
-                $preVersion = Invoke-SSHCommand -SSHSession $sessionssh -Command "getversion" -ErrorAction Stop
-                Add-Content -Path $logfile -Value $preVersion.Output
-                $progressDetails.AppendText("Version actuelle:`r`n$($preVersion.Output)`r`n")
-                
-                Add-Content -Path $logfile -Value "------------------------------------------"
-                Add-Content -Path $logfile -Value "Starting firewall update at $(Get-Date)"
-                Add-Content -Path $logfile -Value "------------------------------------------"
-                
-                $updateResult = Invoke-SSHCommand -SSHSession $sessionssh -Command "fwupdate -r -f /usr/Firewall/Update/$(Split-Path $script:UpdateFilePath -Leaf)" -ErrorAction Stop
-                Add-Content -Path $logfile -Value $updateResult.Output
-                $progressDetails.AppendText("Commande de mise à jour envoyée`r`n")
-                
-                Remove-SSHSession -SSHSession $sessionssh | Out-Null
-                
-                Add-Content -Path $logfile -Value "Update command sent successfully. Waiting for 10 minutes..."
-                $progressDetails.AppendText("Mise à jour lancée, attente de 10 minutes...`r`n")
+                [System.Windows.Forms.MessageBox]::Show($message, "Récapitulatif", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            })
+            
+            # Gestionnaire d'événements pour le bouton de mise à jour tous (OK)
+            $buttonUpdateAllOK.Add_Click({
+                # Filtrer seulement les clients qui ont un statut OK
+                $clientsToUpdate = @()
+                foreach ($item in $listClients.Items) {
+                    if ($item.SubItems[4].Text -eq "OK") {
+                        $clientsToUpdate += $item
+                    }
+                }
+            
+                if ($clientsToUpdate.Count -eq 0) {
+                    [System.Windows.Forms.MessageBox]::Show("Aucun client avec statut OK à mettre à jour", "Information", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                    return
+                }
+            
+                # Vérifier les paramètres de mise à jour
+                if ($comboCategorie.SelectedItem -eq $null -or $comboModele.SelectedItem -eq $null) {
+                    [System.Windows.Forms.MessageBox]::Show("Veuillez sélectionner une catégorie et un modèle", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                    return
+                }
+            
+                # Vérifier si un fichier est nécessaire et sélectionné
+                if ($radioChoisir.Checked -and (-not $script:UpdateFilePath)) {
+                    [System.Windows.Forms.MessageBox]::Show("Aucun fichier de mise à jour sélectionné", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                    return
+                }
+            
+                # Si on utilise la dernière version, déterminer le chemin automatiquement
+                if ($radioDerniere.Checked) {
+                    $categorie = $comboCategorie.SelectedItem
+                    $modeles = $comboModele.SelectedItem
+                    
+                    # Déterminer le sous-dossier en fonction de la catégorie
+                    $sousDossier = switch ($categorie) {
+                        "VM" { "VM" }
+                        "Taille S" { "s" }
+                        "Taille M" { "m" }
+                        "Taille L" { "l" }
+                    }
+                    
+                    # Chemin vers le dossier des firmwares
+                    $firmwareDir = Join-Path $PSScriptRoot "version\$sousDossier"
+                    
+                    # Trouver le firmware le plus récent
+                    $latestFirmware = Get-ChildItem -Path $firmwareDir -Filter "*.maj" | 
+                                     Sort-Object LastWriteTime -Descending | 
+                                     Select-Object -First 1
+                    
+                    if ($latestFirmware) {
+                        $script:UpdateFilePath = $latestFirmware.FullName
+                    } else {
+                        [System.Windows.Forms.MessageBox]::Show("Aucun firmware trouvé dans le dossier $firmwareDir", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                        return
+                    }
+                }
+            
+                # Créer un formulaire de progression
+                $progressForm = New-Object System.Windows.Forms.Form
+                $progressForm.Text = "Mise à jour en cours"
+                $progressForm.Size = New-Object System.Drawing.Size(500, 200)
+                $progressForm.StartPosition = "CenterScreen"
+                $progressForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+                $progressForm.MaximizeBox = $false
+                $progressForm.MinimizeBox = $false
+            
+                $progressLabel = New-Object System.Windows.Forms.Label
+                $progressLabel.Location = New-Object System.Drawing.Point(10, 20)
+                $progressLabel.Size = New-Object System.Drawing.Size(480, 20)
+                $progressForm.Controls.Add($progressLabel)
+            
+                $progressBar = New-Object System.Windows.Forms.ProgressBar
+                $progressBar.Location = New-Object System.Drawing.Point(10, 50)
+                $progressBar.Size = New-Object System.Drawing.Size(480, 20)
+                $progressBar.Minimum = 0
+                $progressBar.Maximum = $clientsToUpdate.Count
+                $progressForm.Controls.Add($progressBar)
+            
+                $progressDetails = New-Object System.Windows.Forms.TextBox
+                $progressDetails.Location = New-Object System.Drawing.Point(10, 80)
+                $progressDetails.Size = New-Object System.Drawing.Size(480, 100)
+                $progressDetails.Multiline = $true
+                $progressDetails.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+                $progressDetails.ReadOnly = $true
+                $progressForm.Controls.Add($progressDetails)
+            
+                # Afficher le formulaire de progression
+                $progressForm.Show()
                 $progressForm.Refresh()
+            
+                $successCount = 0
+                $errorCount = 0
+                $currentIndex = 0
+            
+                foreach ($item in $clientsToUpdate) {
+                    $currentIndex++
+                    $progressBar.Value = $currentIndex
+                    $progressLabel.Text = "Mise à jour de $($item.Text) ($($item.SubItems[1].Text))..."
+                    $progressForm.Refresh()
+            
+                    $client = [PSCustomObject]@{
+                        IP = $item.SubItems[1].Text
+                        Nom = $item.Text
+                        Utilisateur = $textUser.Text
+                        MotDePasse = $textPSWD.Text
+                        Port = $textPort.Text
+                    }
+            
+                    try {
+                        # Convert password to secure string and create credentials
+                        $PASSWORD = ConvertTo-SecureString -String $client.MotDePasse -AsPlainText -Force
+                        $Credential = New-Object -TypeName System.Management.Automation.PSCredential ($client.Utilisateur, $PASSWORD)
+                        $WSCPLogin = "$($client.Utilisateur)" + ":" + "$($client.MotDePasse)"
+            
+                        ## LOG Firewall version + Date in the format day, month, year, hour, minute
+                        $date = Get-Date -Format "dd-MM-yyyy-HH-mm"
+                        $logPath = "C:\logs"
+                        $logfile = "$logPath\$($client.Nom)-$date.log"
+            
+                        # Create logs directory if it doesn't exist
+                        if (-not (Test-Path -Path $logPath)) {
+                            New-Item -ItemType Directory -Path $logPath -Force
+                        }
+            
+                        # Clear any existing trusted hosts
+                        Get-SSHTrustedHost | Remove-SSHTrustedHost 
+            
+                        # SFTP Connection + upload the update file
+                        $progressDetails.AppendText("Upload du fichier de mise à jour...`r`n")
+                        $progressForm.Refresh()
+            
+                        try {
+                            # WinSCP upload command
+                            & "C:\Program Files (x86)\WinSCP\WinSCP.com" /command `
+                                "open scp://$WSCPLogin@$($client.IP)`:$($client.Port) -hostkey=`"*`"" `
+                                "put `"$script:UpdateFilePath`" `"/usr/Firewall/Update/`"" `
+                                "exit"
+                            
+                            $progressDetails.AppendText("Fichier uploadé avec succès`r`n")
+                        } catch {
+                            $progressDetails.AppendText("ERREUR lors de l'upload: $_`r`n")
+                            throw "Erreur upload"
+                        }
+            
+                        ## SSH connection + update
+                        try {
+                            $sessionParams = @{
+                                ComputerName = $client.IP
+                                Credential   = $Credential
+                                AcceptKey    = $true
+                                Port         = $client.Port
+                            }
+            
+                            $sessionssh = New-SSHSession @sessionParams -ErrorAction Stop
+                            
+                            $progressDetails.AppendText("Récupération de la version actuelle...`r`n")
+                            $preVersion = Invoke-SSHCommand -SSHSession $sessionssh -Command "getversion" -ErrorAction Stop
+                            
+                            $progressDetails.AppendText("Lancement de la mise à jour...`r`n")
+                            $updateResult = Invoke-SSHCommand -SSHSession $sessionssh -Command "fwupdate -r -f /usr/Firewall/Update/$(Split-Path $script:UpdateFilePath -Leaf)" -ErrorAction Stop
+                            
+                            Remove-SSHSession -SSHSession $sessionssh | Out-Null
+                            
+                            $progressDetails.AppendText("Mise à jour lancée, attente de 10 minutes...`r`n")
+                            $progressForm.Refresh()
+                            
+                            ## Sleep for 10 mins needed to let the update do its job
+                            Start-Sleep -Seconds 600
+                            
+                            ## Verify update
+                            $sessionssh = New-SSHSession @sessionParams -ErrorAction Stop
+                            $postVersion = Invoke-SSHCommand -SSHSession $sessionssh -Command "getversion" -ErrorAction Stop
+                            Remove-SSHSession -SSHSession $sessionssh | Out-Null
+                            
+                            $progressDetails.AppendText("Mise à jour terminée avec succès!`r`n")
+                            $progressDetails.AppendText("Ancienne version: $($preVersion.Output)`r`n")
+                            $progressDetails.AppendText("Nouvelle version: $($postVersion.Output)`r`n")
+                            
+                            $item.SubItems[3].Text = ($postVersion.Output | Where-Object { $_ -match "Version" } | Select-Object -First 1)
+                            $item.SubItems[4].Text = "Mis à jour"
+                            $item.BackColor = [System.Drawing.Color]::LightGreen
+                            $successCount++
+                        } catch {
+                            $progressDetails.AppendText("ERREUR lors de la mise à jour: $_`r`n")
+                            $item.SubItems[4].Text = "Échec mise à jour"
+                            $item.BackColor = [System.Drawing.Color]::LightCoral
+                            $errorCount++
+                        }
+                    } catch {
+                        $progressDetails.AppendText("ERREUR lors du traitement: $_`r`n")
+                        $item.SubItems[4].Text = "Erreur"
+                        $item.BackColor = [System.Drawing.Color]::LightCoral
+                        $errorCount++
+                    }
+                    
+                    $listClients.Refresh()
+                    $progressForm.Refresh()
+                }
+            
+                # Fermer le formulaire de progression
+                $progressForm.Close()
+            
+                # Afficher un récapitulatif
+                $message = "Mises à jour terminées!`r`n"
+                $message += "Clients traités: $($clientsToUpdate.Count)`r`n"
+                $message += "Mises à jour réussies: $successCount`r`n"
+                $message += "Échecs: $errorCount"
                 
-                ## Sleep for 10 mins needed to let the update do its job
-                Start-Sleep -Seconds 600
+                [System.Windows.Forms.MessageBox]::Show($message, "Récapitulatif", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            })
+            
+            # Gestionnaire d'événements pour le bouton Fermer
+            $buttonCancel.Add_Click({
+                $form.Close()
+            })
+            
+            # Charger automatiquement les clients au démarrage
+            $initialClients = Load-ClientsFromCSV -filePath $defaultCsvPath
+            foreach ($client in $initialClients) {
+                $item = New-Object System.Windows.Forms.ListViewItem($client.Nom)
+                $item.SubItems.Add($client.IP) | Out-Null
+                $item.SubItems.Add($client.Modele) | Out-Null
+                $item.SubItems.Add($client.Version) | Out-Null
+                $item.SubItems.Add($client.Statut) | Out-Null
                 
-                ## Verify update
-                $sessionssh = New-SSHSession @sessionParams -ErrorAction Stop
+                # Colorer en fonction du statut
+                if ($client.Statut -eq "OK") {
+                    $item.BackColor = [System.Drawing.Color]::LightGreen
+                } elseif ($client.Statut -eq "Erreur") {
+                    $item.BackColor = [System.Drawing.Color]::LightCoral
+                }
                 
-                Add-Content -Path $logfile -Value "------------------------------------------"
-                Add-Content -Path $logfile -Value "Firmware version after the update"
-                Add-Content -Path $logfile -Value "------------------------------------------"
-                
-                $postVersion = Invoke-SSHCommand -SSHSession $sessionssh -Command "getversion" -ErrorAction Stop
-                Add-Content -Path $logfile -Value $postVersion.Output
-                $progressDetails.AppendText("Nouvelle version:`r`n$($postVersion.Output)`r`n")
-                
-                Remove-SSHSession -SSHSession $sessionssh | Out-Null
-                
-                Add-Content -Path $logfile -Value "------------------------------------------"
-                Add-Content -Path $logfile -Value "Script completed successfully at $(Get-Date)"
-                Add-Content -Path $logfile -Value "------------------------------------------"
-                
-                $progressDetails.AppendText("Mise à jour terminée avec succès!`r`nVoir le log: $logfile`r`n")
-                $successCount++
-            } catch {
-                Add-Content -Path $logfile -Value "Error during SSH operations: $_"
-                $progressDetails.AppendText("ERREUR lors des opérations SSH: $_`r`n")
-                $errorCount++
+                $listClients.Items.Add($item)
             }
-        } catch {
-            $progressDetails.AppendText("ERREUR lors du traitement du client $($client.Nom): $_`r`n")
-            $errorCount++
-        }
-        
-        $progressForm.Refresh()
-    }
-
-    # Fermer le formulaire de progression
-    $progressForm.Close()
-
-    # Afficher un récapitulatif
-    $message = "Mises à jour terminées!`r`n"
-    $message += "Clients traités: $($listClients.Items.Count)`r`n"
-    $message += "Mises à jour réussies: $successCount`r`n"
-    $message += "Échecs: $errorCount"
-    
-    [System.Windows.Forms.MessageBox]::Show($message, "Récapitulatif", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-})
-
-# Gestionnaire d'événements pour le bouton OK (mise à jour d'un seul client)
-$buttonOK.Add_Click({
-    # Récupérer les valeurs des champs
-    $IP = $textIP.Text
-    $Client = $textClient.Text
-    $User = $textUser.Text
-    $PSWD = $textPSWD.Text
-    $Port = $textPort.Text
-
-    # Validation des champs obligatoires
-    if ([string]::IsNullOrEmpty($IP) -or [string]::IsNullOrEmpty($Client) -or [string]::IsNullOrEmpty($User) -or [string]::IsNullOrEmpty($PSWD)) {
-        [System.Windows.Forms.MessageBox]::Show("Tous les champs obligatoires doivent être remplis!", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-        return
-    }
-
-    # Vérifier si un fichier est nécessaire et sélectionné
-    if ($radioChoisir.Checked -and (-not $script:UpdateFilePath)) {
-        [System.Windows.Forms.MessageBox]::Show("Aucun fichier de mise à jour sélectionné!", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-        return
-    }
-
-    # Si on utilise la dernière version, déterminer le chemin automatiquement
-    if ($radioDerniere.Checked) {
-        $categorie = $comboCategorie.SelectedItem
-        $modeles = $comboModele.SelectedItem
-        
-        # Déterminer le sous-dossier en fonction de la catégorie
-        $sousDossier = switch ($categorie) {
-            "VM" { "VM" }
-            "Taille S" { "s" }
-            "Taille M" { "m" }
-            "Taille L" { "l" }
-        }
-        
-        # Chemin vers le dossier des firmwares
-        $firmwareDir = Join-Path $PSScriptRoot "version\$sousDossier"
-        
-        # Trouver le firmware le plus récent
-        $latestFirmware = Get-ChildItem -Path $firmwareDir -Filter "*.maj" | 
-                         Sort-Object LastWriteTime -Descending | 
-                         Select-Object -First 1
-        
-        if ($latestFirmware) {
-            $script:UpdateFilePath = $latestFirmware.FullName
-            Write-Host "Firmware sélectionné: $($latestFirmware.Name)"
-        } else {
-            [System.Windows.Forms.MessageBox]::Show("Aucun firmware trouvé dans le dossier $firmwareDir", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-            return
-        }
-    }
-
-    # Convert password to secure string and create credentials
-    $PASSWORD = ConvertTo-SecureString -String $PSWD -AsPlainText -Force
-    $Credential = New-Object -TypeName System.Management.Automation.PSCredential ($User, $PASSWORD)
-    $WSCPLogin = "$User" + ":" + "$PSWD"
-
-    ## LOG Firewall version + Date in the format day, month, year, hour, minute
-    $date = Get-Date -Format "dd-MM-yyyy-HH-mm"
-    $logPath = "C:\logs"
-    $logfile = "$logPath\$Client-$date.log"
-
-    # Create logs directory if it doesn't exist
-    if (-not (Test-Path -Path $logPath)) {
-        New-Item -ItemType Directory -Path $logPath -Force
-    }
-
-    # Clear any existing trusted hosts
-    Get-SSHTrustedHost | Remove-SSHTrustedHost 
-
-    ## SFTP Connection + upload the update file
-    Add-Content -Path $logfile -Value "------------------------------------------"
-    Add-Content -Path $logfile -Value "WINSCP upload started at $(Get-Date)"
-    Add-Content -Path $logfile -Value "------------------------------------------"
-    Add-Content -Path $logfile -Value "Client: $Client"
-    Add-Content -Path $logfile -Value "IP: $IP"
-    Add-Content -Path $logfile -Value "Utilisateur: $User"
-    Add-Content -Path $logfile -Value "Modèle sélectionné: $($comboModele.SelectedItem)"
-    Add-Content -Path $logfile -Value "Firmware utilisé: $(Split-Path $script:UpdateFilePath -Leaf)"
-
-    try {
-        # WinSCP upload command
-        & "C:\Program Files (x86)\WinSCP\WinSCP.com" /command `
-            "open scp://$WSCPLogin@$IP`:$Port -hostkey=`"*`"" `
-            "put `"$script:UpdateFilePath`" `"/usr/Firewall/Update/`"" `
-            "exit"
-        
-        Add-Content -Path $logfile -Value "File uploaded successfully"
-    } catch {
-        Add-Content -Path $logfile -Value "Error during WinSCP upload: $_"
-        [System.Windows.Forms.MessageBox]::Show("Erreur lors de l'upload du fichier: $_", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-        exit 1
-    }
-
-    ## SSH connection + update
-    try {
-        $sessionParams = @{
-            ComputerName = $IP
-            Credential   = $Credential
-            AcceptKey    = $true
-            Port         = $Port
-        }
-
-        $sessionssh = New-SSHSession @sessionParams -ErrorAction Stop
-        
-        Add-Content -Path $logfile -Value "------------------------------------------"
-        Add-Content -Path $logfile -Value "Firmware version before the update"
-        Add-Content -Path $logfile -Value "------------------------------------------"
-        
-        $preVersion = Invoke-SSHCommand -SSHSession $sessionssh -Command "getversion" -ErrorAction Stop
-        Add-Content -Path $logfile -Value $preVersion.Output
-        
-        Add-Content -Path $logfile -Value "------------------------------------------"
-        Add-Content -Path $logfile -Value "Starting firewall update at $(Get-Date)"
-        Add-Content -Path $logfile -Value "------------------------------------------"
-        
-        $updateResult = Invoke-SSHCommand -SSHSession $sessionssh -Command "fwupdate -r -f /usr/Firewall/Update/$(Split-Path $script:UpdateFilePath -Leaf)" -ErrorAction Stop
-        Add-Content -Path $logfile -Value $updateResult.Output
-        
-        Remove-SSHSession -SSHSession $sessionssh | Out-Null
-        
-        Add-Content -Path $logfile -Value "Update command sent successfully. Waiting for 10 minutes..."
-        
-        ## Sleep for 10 mins needed to let the update do its job
-        Start-Sleep -Seconds 600
-        
-        ## Verify update
-        $sessionssh = New-SSHSession @sessionParams -ErrorAction Stop
-        
-        Add-Content -Path $logfile -Value "------------------------------------------"
-        Add-Content -Path $logfile -Value "Firmware version after the update"
-        Add-Content -Path $logfile -Value "------------------------------------------"
-        
-        $postVersion = Invoke-SSHCommand -SSHSession $sessionssh -Command "getversion" -ErrorAction Stop
-        Add-Content -Path $logfile -Value $postVersion.Output
-        
-        Remove-SSHSession -SSHSession $sessionssh | Out-Null
-        
-        # Afficher un message de succès
-        [System.Windows.Forms.MessageBox]::Show("Mise à jour terminée avec succès!`nVoir le log: $logfile", "Succès", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-        
-    } catch {
-        Add-Content -Path $logfile -Value "Error during SSH operations: $_"
-        [System.Windows.Forms.MessageBox]::Show("Erreur lors des opérations SSH: $_", "Erreur", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-        exit 1
-    }
-
-    Add-Content -Path $logfile -Value "------------------------------------------"
-    Add-Content -Path $logfile -Value "Script completed successfully at $(Get-Date)"
-    Add-Content -Path $logfile -Value "------------------------------------------"
-})
-
-# Afficher le formulaire et attendre la sélection
-$result = $form.ShowDialog()
+            
+            # Afficher le formulaire
+            $form.ShowDialog() | Out-Null
